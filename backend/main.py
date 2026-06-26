@@ -303,8 +303,12 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
-
-from database import init_db, get_connection, get_lock
+from database import (
+    init_db,
+    get_connection,
+    get_lock,
+    close_connection
+)
 from collector import start_collector
 import analyzer
 from pcap_parser import parse_pcap_file
@@ -353,16 +357,24 @@ async def lifespan(app_instance: FastAPI):
         print(f"[Main] Could not start UDP collector: {e}")
     yield
     # Shutdown — clean up in correct order
+    # Shutdown
     if collector_task:
         collector_task.cancel()
         try:
-            await collector_task
+          await collector_task
         except asyncio.CancelledError:
-            pass
+          pass
+
     capture_stop_evt.set()
+
     if capture_thread and capture_thread.is_alive():
         capture_thread.join(timeout=3.0)
+
+    close_connection()
+
     print("[Main] Shutdown complete.")
+    close_connection()
+    print("[Main] Database connection closed.")
 
 
 app = FastAPI(title="HTC NetFlow Analyzer Pro", lifespan=lifespan)
