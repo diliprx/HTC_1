@@ -152,7 +152,7 @@ class NetFlowV5Protocol(asyncio.DatagramProtocol):
     def __init__(self):
         super().__init__()
         self.batch      = []
-        self.batch_size = 100
+        self.batch_size = 1
 
     def connection_made(self, transport):
         self.transport = transport
@@ -203,23 +203,32 @@ class NetFlowV5Protocol(asyncio.DatagramProtocol):
             print(f"[Collector] Error processing datagram: {e}")
 
     def _flush(self):
-        if not self.batch:
-            return
-        lock = get_lock()
-        conn = get_connection()
-        with lock:
-            try:
-                conn.executemany(INSERT_SQL, self.batch)
-                conn.commit()          # FIX: was missing commit
-                self.batch.clear()
-            except Exception as e:
-                print(f"[Collector] DB flush error: {e}")
+      if not self.batch:
+          return
+
+      lock = get_lock()
+      conn = get_connection()
+
+      with lock:
+        try:
+            conn.executemany(INSERT_SQL, self.batch)
+            conn.commit()
+
+            print(f"[Collector] Stored {len(self.batch)} flow(s)")
+
+            self.batch.clear()
+
+        except Exception as e:
+         conn.rollback()
+         print(f"[Collector] DB flush error: {e}")
 
     def error_received(self, exc):
         print(f"[Collector] Socket error: {exc}")
 
     def connection_lost(self, exc):
-        self._flush()   # drain remaining on shutdown
+        if self.batch:
+          self._flush()
+           # drain remaining on shutdown
         print("[Collector] Connection closed, remaining batch flushed.")
 
 
