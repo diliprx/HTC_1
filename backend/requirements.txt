@@ -1,7 +1,13 @@
-fastapi
-uvicorn
-duckdb
-dpkt
-scapy
-pandas
-pydantic
+# fastapi
+# uvicorn
+# duckdb
+# dpkt
+# scapy
+# pandas
+# pydantic
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+duckdb>=0.10.0
+dpkt>=1.9.8
+scapy>=2.5.0
+pydantic>=2.0.0
