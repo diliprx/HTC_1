@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Premium Cyber Defense Color Palette */
+  --color-text-primary: #F8FAFC;       /* Off-white */
+  --color-text-secondary: #94A3B8;     /* Slate grey */
+  --color-border-tertiary: rgba(148, 163, 184, 0.15); /* Muted lines */
+  --color-background-primary: #080B10; /* Obsidian Black */
+  --color-background-secondary: #111622; /* Navy Slate Card */
+  
+  --border-radius-md: 6px;
+  --border-radius-lg: 12px;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-background-primary);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Custom Telemetry Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-background-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: #1E293B;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Pulsing warning keyframe animation */
+@keyframes warningPulse {
+  0%, 100% { border-color: rgba(255, 51, 102, 0.4); box-shadow: 0 0 4px rgba(255, 51, 102, 0.1); }
+  50% { border-color: rgba(255, 51, 102, 0.8); box-shadow: 0 0 10px rgba(255, 51, 102, 0.3); }
+}
+
+.warning-pulse {
+  animation: warningPulse 2s infinite ease-in-out;
+}
+
+/* Flow line dash array animation */
+@keyframes flowDash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+.flow-animate {
+  stroke-dasharray: 6, 4;
+  animation: flowDash 1s infinite linear;
+}
+

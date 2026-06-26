@@ -1,0 +1,532 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);color:var(--color-text-primary)}
+.tab-bar{display:flex;gap:2px;border-bottom:0.5px solid var(--color-border-tertiary);margin-bottom:1.5rem}
+.tab{padding:8px 16px;font-size:13px;cursor:pointer;border:none;background:transparent;color:var(--color-text-secondary);border-bottom:2px solid transparent}
+.tab.active{color:var(--color-text-primary);border-bottom:2px solid var(--color-text-primary);font-weight:500}
+.tab:hover:not(.active){background:var(--color-background-secondary)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.5rem}
+.metric{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:12px 14px}
+.metric-label{font-size:11px;color:var(--color-text-secondary);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px}
+.metric-val{font-size:22px;font-weight:500}
+.metric-val.blue{color:#185FA5}.metric-val.green{color:#3B6D11}.metric-val.amber{color:#854F0B}.metric-val.red{color:#A32D2D}.metric-val.purple{color:#534AB7}
+.section-title{font-size:14px;font-weight:500;margin-bottom:10px;color:var(--color-text-primary)}
+.table-wrap{border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);overflow:auto;margin-bottom:1.5rem}
+table{width:100%;font-size:12px;border-collapse:collapse}
+th{background:var(--color-background-secondary);padding:8px 12px;text-align:left;font-weight:500;font-size:11px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.3px;border-bottom:0.5px solid var(--color-border-tertiary)}
+td{padding:7px 12px;border-bottom:0.5px solid var(--color-border-tertiary);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--color-background-secondary)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+.badge-blue{background:#E6F1FB;color:#0C447C}.badge-green{background:#EAF3DE;color:#27500A}.badge-red{background:#FCEBEB;color:#791F1F}.badge-amber{background:#FAEEDA;color:#633806}.badge-gray{background:#F1EFE8;color:#444441}.badge-purple{background:#EEEDFE;color:#3C3489}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:1.5rem}
+@media(max-width:520px){.two-col{grid-template-columns:1fr}}
+.card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:14px 16px}
+.graph-canvas{width:100%;overflow:auto}
+svg text{font-family:var(--font-sans)}
+.timer-bar{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px 14px;display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;font-size:13px}
+.progress-track{flex:1;height:6px;background:var(--color-border-tertiary);border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;background:#185FA5;border-radius:3px;transition:width .5s linear}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.dot-green{background:#639922}.dot-red{background:#E24B4A}.dot-amber{background:#BA7517}
+.compliance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:1.5rem}
+.comp-card{border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px}
+.comp-ip{font-size:13px;font-weight:500;margin-bottom:6px}
+.comp-row{display:flex;justify-content:space-between;font-size:11px;color:var(--color-text-secondary);margin-bottom:3px}
+.comp-bar-track{height:4px;background:var(--color-border-tertiary);border-radius:2px;margin-top:6px}
+.comp-bar-fill{height:100%;border-radius:2px}
+.hidden{display:none}
+.search-row{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.search-row input{flex:1;font-size:13px;padding:6px 10px}
+.search-row select{font-size:13px;padding:6px 10px}
+.window-badge{background:#E6F1FB;color:#0C447C;padding:4px 10px;border-radius:var(--border-radius-md);font-size:11px;font-weight:500}
+</style>
+
+<h2 class="sr-only">NetFlow network analytics and compliance dashboard with asset discovery, protocol analysis, and relationship graphs</h2>
+
+<div style="padding:1rem 0">
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
+  <div>
+    <div style="font-size:18px;font-weight:500">NetFlow Analytics Dashboard</div>
+    <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">HTC Internship — Network Intelligence Platform</div>
+  </div>
+  <span class="window-badge" id="window-label">⏱ Window: 4h | Next refresh: 14:00</span>
+</div>
+
+<div class="timer-bar">
+  <span style="font-size:12px;color:var(--color-text-secondary)">4-hour window progress</span>
+  <div class="progress-track"><div class="progress-fill" id="timer-progress" style="width:0%"></div></div>
+  <span id="timer-text" style="font-size:12px;font-weight:500;min-width:70px;text-align:right">0% elapsed</span>
+  <button onclick="simulateRefresh()" style="font-size:12px;padding:5px 12px">↻ Refresh</button>
+</div>
+
+<div class="tab-bar">
+  <button class="tab active" onclick="showTab('overview')">Overview</button>
+  <button class="tab" onclick="showTab('assets')">Assets & IPs</button>
+  <button class="tab" onclick="showTab('protocols')">Protocols & Ports</button>
+  <button class="tab" onclick="showTab('graphs')">Relationship Graphs</button>
+  <button class="tab" onclick="showTab('compliance')">Compliance Report</button>
+</div>
+
+<!-- OVERVIEW TAB -->
+<div id="tab-overview">
+  <div class="metrics" id="metrics-overview"></div>
+
+  <div class="two-col">
+    <div class="card">
+      <div class="section-title">Gateway analysis</div>
+      <div id="gateway-panel"></div>
+    </div>
+    <div class="card">
+      <div class="section-title">NAT-bypassing IPs <span style="font-size:11px;color:var(--color-text-secondary)">(not via gateway)</span></div>
+      <div id="nat-panel"></div>
+    </div>
+  </div>
+
+  <div class="section-title">Top talkers (bytes)</div>
+  <div style="position:relative;width:100%;height:220px;margin-bottom:1.5rem">
+    <canvas id="talkerChart" role="img" aria-label="Bar chart of top 8 IP addresses by bytes transferred in the network capture"></canvas>
+  </div>
+  <div id="talker-legend" style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--color-text-secondary);margin-bottom:1.5rem"></div>
+</div>
+
+<!-- ASSETS TAB -->
+<div id="tab-assets" class="hidden">
+  <div class="search-row">
+    <input id="asset-search" type="text" placeholder="Search IP or hostname..." oninput="filterTable('asset-table',this.value)">
+    <select onchange="filterByBadge('asset-table',this.value)">
+      <option value="">All types</option>
+      <option value="Internal">Internal</option>
+      <option value="Public">Public</option>
+      <option value="Gateway">Gateway</option>
+    </select>
+  </div>
+  <div class="table-wrap">
+    <table id="asset-table">
+      <thead><tr><th>IP Address</th><th>Hostname</th><th>Type</th><th>Protocols</th><th>Ports</th><th>Bytes</th><th>Flows</th></tr></thead>
+      <tbody id="asset-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Public IPs communicating with internal assets</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Public IP</th><th>Geolocation</th><th>Talks to</th><th>Protocols</th><th>Bytes In</th><th>Threat Score</th></tr></thead>
+      <tbody id="public-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- PROTOCOLS TAB -->
+<div id="tab-protocols" class="hidden">
+  <div class="two-col">
+    <div>
+      <div class="section-title">Protocol distribution</div>
+      <div style="position:relative;width:100%;height:200px">
+        <canvas id="protoChart" role="img" aria-label="Doughnut chart showing protocol distribution by flow count"></canvas>
+      </div>
+      <div id="proto-legend" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:11px"></div>
+    </div>
+    <div>
+      <div class="section-title">Port usage frequency</div>
+      <div style="position:relative;width:100%;height:200px">
+        <canvas id="portChart" role="img" aria-label="Horizontal bar chart of top ports by flow count"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Protocol + port details</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Protocol</th><th>Port</th><th>Service</th><th>Flows</th><th>Bytes</th><th>IPs using</th><th>Risk</th></tr></thead>
+      <tbody id="proto-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- GRAPHS TAB -->
+<div id="tab-graphs" class="hidden">
+  <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="tab active" onclick="switchGraph('asset-pubip',this)" id="g1">Asset ↔ Public IPs</button>
+    <button class="tab" onclick="switchGraph('asset-proto',this)" id="g2">Asset ↔ Protocols</button>
+    <button class="tab" onclick="switchGraph('gateway-flow',this)" id="g3">Gateway flow</button>
+  </div>
+  <div class="card graph-canvas">
+    <svg id="main-graph" viewBox="0 0 660 420" style="width:100%;display:block"></svg>
+  </div>
+  <div style="font-size:11px;color:var(--color-text-secondary);margin-top:8px;text-align:center">One-to-many relationship graph — center nodes are internal assets, outer nodes are connected entities</div>
+</div>
+
+<!-- COMPLIANCE TAB -->
+<div id="tab-compliance" class="hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+    <div class="section-title" style="margin:0">Compliance report</div>
+    <div style="display:flex;gap:8px">
+      <span id="comp-timestamp" style="font-size:11px;color:var(--color-text-secondary)"></span>
+      <button onclick="downloadReport()" style="font-size:12px;padding:5px 12px"><i class="ti ti-download" aria-hidden="true"></i> Export CSV</button>
+    </div>
+  </div>
+
+  <div class="metrics" id="comp-metrics"></div>
+
+  <div class="section-title">Per-asset compliance status</div>
+  <div class="compliance-grid" id="comp-grid"></div>
+
+  <div class="section-title">IPs absent from current window traffic</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>IP Address</th><th>Last seen</th><th>Expected protocols</th><th>Status</th></tr></thead>
+      <tbody id="absent-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Full compliance table</div>
+  <div class="table-wrap" style="max-height:340px;overflow-y:auto">
+    <table>
+      <thead><tr><th>Internal IP</th><th>Protocols ✓</th><th>Ports ✓</th><th>In traffic</th><th>Public peers</th><th>Via Gateway</th><th>Compliance %</th></tr></thead>
+      <tbody id="full-comp-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const DATA = (() => {
+  const internalIPs = [
+    {ip:'10.0.0.10',host:'web-server-01',type:'Internal',bytes:4820000,flows:342},
+    {ip:'10.0.0.11',host:'web-server-02',type:'Internal',bytes:3910000,flows:298},
+    {ip:'10.0.0.20',host:'db-server-01',type:'Internal',bytes:8240000,flows:512},
+    {ip:'10.0.0.21',host:'db-server-02',type:'Internal',bytes:6130000,flows:407},
+    {ip:'10.0.0.30',host:'app-server-01',type:'Internal',bytes:2950000,flows:231},
+    {ip:'10.0.0.40',host:'mail-server',type:'Internal',bytes:1830000,flows:178},
+    {ip:'10.0.0.50',host:'file-server',type:'Internal',bytes:5620000,flows:389},
+    {ip:'10.0.1.100',host:'workstation-A',type:'Internal',bytes:920000,flows:87},
+    {ip:'10.0.1.101',host:'workstation-B',type:'Internal',bytes:740000,flows:63},
+    {ip:'10.0.1.102',host:'workstation-C',type:'Internal',bytes:430000,flows:41},
+    {ip:'192.168.10.5',host:'dev-machine',type:'Internal',bytes:310000,flows:29},
+  ];
+  const gateways = [
+    {ip:'10.0.0.1',host:'core-router',type:'Gateway'},
+    {ip:'10.0.0.2',host:'firewall-01',type:'Gateway'},
+  ];
+  const publicIPs = [
+    {ip:'8.8.8.8',geo:'US / Google',talks:['10.0.0.10','10.0.0.30'],proto:['UDP'],bytesIn:240000,threat:5},
+    {ip:'1.1.1.1',geo:'AU / Cloudflare',talks:['10.0.0.10'],proto:['UDP'],bytesIn:180000,threat:4},
+    {ip:'203.0.113.10',geo:'SG / Vendor',talks:['10.0.0.20'],proto:['TCP'],bytesIn:620000,threat:12},
+    {ip:'198.51.100.5',geo:'DE / CDN',talks:['10.0.0.11','10.0.0.30'],proto:['TCP','HTTP'],bytesIn:910000,threat:8},
+    {ip:'185.220.101.4',geo:'NL / Unknown',talks:['10.0.0.40'],proto:['SMTP'],bytesIn:130000,threat:61},
+    {ip:'104.18.22.33',geo:'US / Cloudflare',talks:['10.0.0.50','10.0.1.100'],proto:['TCP','HTTPS'],bytesIn:320000,threat:6},
+    {ip:'91.108.4.10',geo:'NL / Telegram',talks:['10.0.1.101'],proto:['TCP'],bytesIn:75000,threat:22},
+    {ip:'142.250.80.46',geo:'US / Google',talks:['10.0.0.10','10.0.0.11','10.0.1.102'],proto:['HTTPS','HTTP'],bytesIn:450000,threat:5},
+  ];
+  const protoPort = [
+    {proto:'TCP',port:80,service:'HTTP',flows:1240,bytes:9200000,ips:['10.0.0.10','10.0.0.11','10.0.0.30'],risk:'Low'},
+    {proto:'TCP',port:443,service:'HTTPS',flows:2180,bytes:18400000,ips:['10.0.0.10','10.0.0.11','10.0.0.30','10.0.1.100'],risk:'Low'},
+    {proto:'TCP',port:3306,service:'MySQL',flows:870,bytes:6800000,ips:['10.0.0.20','10.0.0.21','10.0.0.30'],risk:'Medium'},
+    {proto:'TCP',port:22,service:'SSH',flows:320,bytes:1200000,ips:['10.0.0.10','10.0.0.20','10.0.0.50'],risk:'Medium'},
+    {proto:'UDP',port:53,service:'DNS',flows:4600,bytes:380000,ips:['10.0.0.10','10.0.0.11','10.0.0.30','10.0.1.100','10.0.1.101'],risk:'Low'},
+    {proto:'TCP',port:25,service:'SMTP',flows:190,bytes:420000,ips:['10.0.0.40'],risk:'High'},
+    {proto:'TCP',port:445,service:'SMB',flows:510,bytes:4200000,ips:['10.0.0.50','10.0.1.100','10.0.1.101','10.0.1.102'],risk:'High'},
+    {proto:'ICMP',port:0,service:'Ping',flows:680,bytes:180000,ips:['10.0.0.10','10.0.0.20','10.0.0.1'],risk:'Low'},
+    {proto:'UDP',port:123,service:'NTP',flows:290,bytes:42000,ips:['10.0.0.10','10.0.0.20'],risk:'Low'},
+    {proto:'TCP',port:8080,service:'HTTP-Alt',flows:140,bytes:820000,ips:['10.0.0.30','10.0.1.100'],risk:'Medium'},
+    {proto:'TCP',port:5432,service:'PostgreSQL',flows:230,bytes:1900000,ips:['10.0.0.20','10.0.0.30'],risk:'Medium'},
+    {proto:'UDP',port:161,service:'SNMP',flows:95,bytes:28000,ips:['10.0.0.1','10.0.0.2'],risk:'Medium'},
+  ];
+  const natBypass = ['10.0.1.100','10.0.1.101','192.168.10.5'];
+  const absentIPs = [
+    {ip:'10.0.0.60',lastSeen:'3h ago',expectedProtos:'TCP/HTTPS'},
+    {ip:'10.0.0.70',lastSeen:'5h ago',expectedProtos:'TCP/SSH'},
+    {ip:'10.0.2.10',lastSeen:'Never in window',expectedProtos:'UDP/DNS'},
+  ];
+  return {internalIPs,gateways,publicIPs,protoPort,natBypass,absentIPs};
+})();
+
+let currentTab='overview';
+let windowProgress=0;
+let windowTimer=null;
+let charts={};
+
+function fmt(n){if(n>=1000000)return(n/1000000).toFixed(1)+'M';if(n>=1000)return(n/1000).toFixed(0)+'K';return n}
+
+function showTab(name){
+  document.querySelectorAll('[id^="tab-"]').forEach(el=>el.classList.add('hidden'));
+  document.getElementById('tab-'+name).classList.remove('hidden');
+  document.querySelectorAll('.tab-bar .tab').forEach((t,i)=>{
+    t.classList.toggle('active',['overview','assets','protocols','graphs','compliance'][i]===name);
+  });
+  currentTab=name;
+  if(name==='graphs') drawGraph('asset-pubip');
+  if(name==='compliance') renderCompliance();
+}
+
+function filterTable(tableId,val){
+  const rows=document.querySelectorAll('#'+tableId+' tbody tr');
+  rows.forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(val.toLowerCase())?'':'none'});
+}
+function filterByBadge(tableId,val){
+  const rows=document.querySelectorAll('#'+tableId+' tbody tr');
+  rows.forEach(r=>{r.style.display=(!val||r.textContent.includes(val))?'':'none'});
+}
+
+function renderOverview(){
+  const total=DATA.internalIPs.reduce((a,b)=>a+b.bytes,0)+DATA.publicIPs.reduce((a,b)=>a+b.bytesIn,0);
+  document.getElementById('metrics-overview').innerHTML=`
+    <div class="metric"><div class="metric-label">Internal assets</div><div class="metric-val blue">${DATA.internalIPs.length}</div></div>
+    <div class="metric"><div class="metric-label">Public IPs</div><div class="metric-val purple">${DATA.publicIPs.length}</div></div>
+    <div class="metric"><div class="metric-label">Gateways</div><div class="metric-val green">2</div></div>
+    <div class="metric"><div class="metric-label">NAT bypass IPs</div><div class="metric-val amber">${DATA.natBypass.length}</div></div>
+    <div class="metric"><div class="metric-label">Protocols</div><div class="metric-val blue">${[...new Set(DATA.protoPort.map(p=>p.proto))].length}</div></div>
+    <div class="metric"><div class="metric-label">Unique ports</div><div class="metric-val purple">${DATA.protoPort.length}</div></div>
+    <div class="metric"><div class="metric-label">Total flows</div><div class="metric-val green">${fmt(DATA.protoPort.reduce((a,b)=>a+b.flows,0))}</div></div>
+    <div class="metric"><div class="metric-label">Total bytes</div><div class="metric-val">${fmt(total)}</div></div>
+  `;
+  document.getElementById('gateway-panel').innerHTML=DATA.gateways.map(g=>`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+      <span class="status-dot dot-green"></span>
+      <span style="font-weight:500">${g.ip}</span>
+      <span style="color:var(--color-text-secondary)">${g.host}</span>
+      <span class="badge badge-blue">Active</span>
+    </div>
+  `).join('')+'<div style="font-size:11px;color:var(--color-text-secondary);margin-top:6px">Configured NAT gateway — identified from flow symmetry & default route analysis</div>';
+  document.getElementById('nat-panel').innerHTML=DATA.natBypass.map(ip=>`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+      <span class="status-dot dot-amber"></span>
+      <span style="font-weight:500">${ip}</span>
+      <span class="badge badge-amber">NAT bypass</span>
+    </div>
+  `).join('')+'<div style="font-size:11px;color:var(--color-text-secondary);margin-top:6px">Traffic observed without traversing configured gateway — potential direct/split routing</div>';
+
+  const sorted=[...DATA.internalIPs].sort((a,b)=>b.bytes-a.bytes).slice(0,8);
+  const colors=['#185FA5','#534AB7','#3B6D11','#854F0B','#0F6E56','#A32D2D','#3C3489','#5F5E5A'];
+  if(charts.talker) charts.talker.destroy();
+  charts.talker=new Chart(document.getElementById('talkerChart'),{
+    type:'bar',
+    data:{labels:sorted.map(d=>d.ip),datasets:[{label:'Bytes',data:sorted.map(d=>d.bytes),backgroundColor:colors}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>' '+fmt(ctx.raw)+' bytes'}}},scales:{y:{ticks:{callback:v=>fmt(v)},grid:{color:'rgba(128,128,128,0.1)'}},x:{ticks:{font:{size:11}}}}}
+  });
+  document.getElementById('talker-legend').innerHTML=sorted.map((d,i)=>`<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:${colors[i]}"></span>${d.ip} (${d.host})</span>`).join('');
+}
+
+function renderAssets(){
+  document.getElementById('asset-tbody').innerHTML=[...DATA.internalIPs,...DATA.gateways.map(g=>({...g,bytes:0,flows:0}))].map(a=>{
+    const protos=[...new Set(DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.proto))];
+    const ports=DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.port).filter(p=>p>0);
+    const badgeClass=a.type==='Gateway'?'badge-green':a.type==='Internal'?'badge-blue':'badge-gray';
+    return `<tr><td style="font-weight:500">${a.ip}</td><td style="color:var(--color-text-secondary)">${a.host||'—'}</td><td><span class="badge ${badgeClass}">${a.type}</span></td><td>${protos.map(p=>`<span class="badge badge-gray" style="margin-right:3px">${p}</span>`).join('')||'—'}</td><td style="font-size:11px">${ports.slice(0,4).join(', ')+(ports.length>4?'…':'')}</td><td>${fmt(a.bytes||0)}</td><td>${a.flows||0}</td></tr>`;
+  }).join('');
+  document.getElementById('public-tbody').innerHTML=DATA.publicIPs.map(p=>{
+    const t=p.threat;
+    const tBadge=t>50?'badge-red':t>20?'badge-amber':t>10?'badge-purple':'badge-green';
+    return `<tr><td style="font-weight:500">${p.ip}</td><td style="font-size:11px;color:var(--color-text-secondary)">${p.geo}</td><td style="font-size:11px">${p.talks.join(', ')}</td><td>${p.proto.map(pr=>`<span class="badge badge-blue" style="margin-right:2px">${pr}</span>`).join('')}</td><td>${fmt(p.bytesIn)}</td><td><span class="badge ${tBadge}">${t}/100</span></td></tr>`;
+  }).join('');
+}
+
+function renderProtocols(){
+  const protos=[...new Set(DATA.protoPort.map(p=>p.proto))];
+  const protoCounts=protos.map(pr=>DATA.protoPort.filter(p=>p.proto===pr).reduce((a,b)=>a+b.flows,0));
+  const pColors=['#185FA5','#534AB7','#3B6D11','#854F0B','#0F6E56','#A32D2D'];
+  if(charts.proto) charts.proto.destroy();
+  charts.proto=new Chart(document.getElementById('protoChart'),{
+    type:'doughnut',
+    data:{labels:protos,datasets:[{data:protoCounts,backgroundColor:pColors,borderWidth:1,borderColor:'#ffffff'}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}
+  });
+  document.getElementById('proto-legend').innerHTML=protos.map((p,i)=>`<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:${pColors[i]}"></span>${p}: ${protoCounts[i]} flows</span>`).join('');
+
+  const sortedPorts=[...DATA.protoPort].sort((a,b)=>b.flows-a.flows).slice(0,8);
+  if(charts.port) charts.port.destroy();
+  charts.port=new Chart(document.getElementById('portChart'),{
+    type:'bar',
+    data:{labels:sortedPorts.map(p=>p.port===0?'ICMP':p.port+'/'+p.proto),datasets:[{label:'Flows',data:sortedPorts.map(p=>p.flows),backgroundColor:'#185FA5'}]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:10}},grid:{color:'rgba(128,128,128,0.1)'}},y:{ticks:{font:{size:10}}}}}
+  });
+
+  const riskMap={Low:'badge-green',Medium:'badge-amber',High:'badge-red'};
+  document.getElementById('proto-tbody').innerHTML=DATA.protoPort.map(p=>`
+    <tr><td><span class="badge badge-blue">${p.proto}</span></td><td>${p.port||'—'}</td><td>${p.service}</td><td>${p.flows}</td><td>${fmt(p.bytes)}</td><td>${p.ips.length}</td><td><span class="badge ${riskMap[p.risk]}">${p.risk}</span></td></tr>
+  `).join('');
+}
+
+function drawGraph(type){
+  const svg=document.getElementById('main-graph');
+  svg.innerHTML='';
+  const W=660,H=420;
+  const ns='http://www.w3.org/2000/svg';
+  const line=(x1,y1,x2,y2,c='rgba(128,128,128,0.3)')=>{const el=document.createElementNS(ns,'line');el.setAttribute('x1',x1);el.setAttribute('y1',y1);el.setAttribute('x2',x2);el.setAttribute('y2',y2);el.setAttribute('stroke',c);el.setAttribute('stroke-width',1.2);svg.appendChild(el);return el};
+  const circle=(cx,cy,r,fill,stroke)=>{const el=document.createElementNS(ns,'circle');el.setAttribute('cx',cx);el.setAttribute('cy',cy);el.setAttribute('r',r);el.setAttribute('fill',fill);el.setAttribute('stroke',stroke||fill);el.setAttribute('stroke-width',1.5);svg.appendChild(el);return el};
+  const text=(x,y,t,size=11,color='var(--color-text-primary)',weight=400)=>{const el=document.createElementNS(ns,'text');el.setAttribute('x',x);el.setAttribute('y',y);el.setAttribute('text-anchor','middle');el.setAttribute('dominant-baseline','central');el.setAttribute('font-size',size);el.setAttribute('fill',color);el.setAttribute('font-weight',weight);el.textContent=t;svg.appendChild(el);return el};
+
+  if(type==='asset-pubip'){
+    const assets=DATA.internalIPs.slice(0,6);
+    const cx=W/2,cy=H/2;
+    assets.forEach((a,i)=>{
+      const angle=(i/assets.length)*2*Math.PI-Math.PI/2;
+      const ax=cx+140*Math.cos(angle),ay=cy+140*Math.sin(angle);
+      const peers=DATA.publicIPs.filter(p=>p.talks.includes(a.ip));
+      peers.forEach((pp,j)=>{
+        const pa=angle+(j-peers.length/2)*0.45;
+        const px=ax+100*Math.cos(pa),py=ay+100*Math.sin(pa);
+        line(ax,ay,px,py,'rgba(185,100,40,0.35)');
+        circle(px,py,16,'#FAEEDA','#BA7517');
+        text(px,py,pp.ip.split('.').slice(-1)[0]+'.*',9,'#633806');
+      });
+      line(cx,cy,ax,ay,'rgba(24,95,165,0.35)');
+      circle(ax,ay,22,'#E6F1FB','#185FA5');
+      text(ax,ay,a.ip.replace('10.0.0.','10.*.'),9,'#0C447C');
+    });
+    circle(cx,cy,28,'#EAF3DE','#3B6D11');
+    text(cx,cy,'GW',12,'#27500A',500);
+    text(cx,cy+42,'Gateway',11,'var(--color-text-secondary)');
+    text(W/2,18,'Internal assets (blue) ↔ Public IPs (amber)',11,'var(--color-text-secondary)');
+  } else if(type==='asset-proto'){
+    const assets=DATA.internalIPs.slice(0,5);
+    const protos=[...new Set(DATA.protoPort.map(p=>p.proto))];
+    const protoX=W-80;
+    protos.forEach((pr,i)=>{
+      const py=60+i*(H-60)/protos.length;
+      circle(protoX,py,18,'#EEEDFE','#534AB7');
+      text(protoX,py,pr,9,'#3C3489');
+    });
+    assets.forEach((a,i)=>{
+      const ay=80+i*(H-100)/assets.length;
+      circle(80,ay,20,'#E6F1FB','#185FA5');
+      text(80,ay,a.ip.split('.').pop(),9,'#0C447C');
+      const usedProtos=[...new Set(DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.proto))];
+      protos.forEach((pr,pi)=>{
+        if(usedProtos.includes(pr)){
+          const py2=60+pi*(H-60)/protos.length;
+          line(100,ay,protoX-18,py2,'rgba(83,74,183,0.25)');
+        }
+      });
+    });
+    text(80,24,'Internal IPs',11,'#0C447C');
+    text(protoX,24,'Protocols',11,'#3C3489');
+  } else {
+    const gx=W/2,gy=H/2;
+    circle(gx,gy,32,'#EAF3DE','#3B6D11');
+    text(gx,gy,'GW',13,'#27500A',500);
+    text(gx,gy+50,'10.0.0.1',10,'var(--color-text-secondary)');
+    const passedIPs=DATA.internalIPs.filter(a=>!DATA.natBypass.includes(a.ip)).slice(0,7);
+    passedIPs.forEach((a,i)=>{
+      const angle=(i/passedIPs.length)*2*Math.PI;
+      const ax=gx+160*Math.cos(angle),ay=gy+160*Math.sin(angle);
+      line(gx,gy,ax,ay,'rgba(24,95,165,0.3)');
+      circle(ax,ay,20,'#E6F1FB','#185FA5');
+      text(ax,ay,'.'+a.ip.split('.').pop(),9,'#0C447C');
+    });
+    DATA.natBypass.forEach((ip,i)=>{
+      const angle=Math.PI/2+i*0.5;
+      const ax=gx+220*Math.cos(angle),ay=gy+220*Math.sin(angle);
+      const dline=document.createElementNS('http://www.w3.org/2000/svg','line');
+      ['x1','y1','x2','y2'].forEach((a,ai)=>dline.setAttribute(a,[gx,gy,ax,ay][ai]));
+      dline.setAttribute('stroke','#BA7517');dline.setAttribute('stroke-width',1.5);dline.setAttribute('stroke-dasharray','6,3');svg.appendChild(dline);
+      circle(ax,ay,20,'#FAEEDA','#BA7517');
+      text(ax,ay,ip.split('.').pop(),9,'#633806');
+    });
+    text(W/2,18,'Gateway flow — solid=via GW, dashed=NAT bypass',11,'var(--color-text-secondary)');
+  }
+}
+
+function switchGraph(type,btn){
+  document.querySelectorAll('#tab-graphs .tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+  drawGraph(type);
+}
+
+function renderCompliance(){
+  const ts=new Date();
+  document.getElementById('comp-timestamp').textContent='Generated: '+ts.toLocaleTimeString()+' | Next: '+new Date(ts.getTime()+4*3600000).toLocaleTimeString();
+  document.getElementById('comp-metrics').innerHTML=`
+    <div class="metric"><div class="metric-label">Compliant assets</div><div class="metric-val green">8</div></div>
+    <div class="metric"><div class="metric-label">Partial compliance</div><div class="metric-val amber">3</div></div>
+    <div class="metric"><div class="metric-label">Non-compliant</div><div class="metric-val red">0</div></div>
+    <div class="metric"><div class="metric-label">Absent IPs</div><div class="metric-val red">${DATA.absentIPs.length}</div></div>
+    <div class="metric"><div class="metric-label">Overall score</div><div class="metric-val blue">84%</div></div>
+  `;
+  document.getElementById('comp-grid').innerHTML=DATA.internalIPs.map(a=>{
+    const protos=[...new Set(DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.proto))];
+    const ports=DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.port).filter(p=>p>0);
+    const viaGW=!DATA.natBypass.includes(a.ip);
+    const score=Math.round((protos.length>0?40:0)+(viaGW?40:0)+(ports.length<5?20:10));
+    const barColor=score>80?'#639922':score>60?'#BA7517':'#E24B4A';
+    return `<div class="comp-card">
+      <div class="comp-ip">${a.ip}</div>
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:6px">${a.host}</div>
+      <div class="comp-row"><span>Protocols</span><span>${protos.join(', ')||'None'}</span></div>
+      <div class="comp-row"><span>Ports</span><span>${ports.length} active</span></div>
+      <div class="comp-row"><span>Via gateway</span><span><span class="status-dot ${viaGW?'dot-green':'dot-amber'}"></span>${viaGW?'Yes':'Bypass'}</span></div>
+      <div class="comp-bar-track"><div class="comp-bar-fill" style="width:${score}%;background:${barColor}"></div></div>
+      <div style="font-size:11px;text-align:right;margin-top:3px;color:${barColor};font-weight:500">${score}%</div>
+    </div>`;
+  }).join('');
+  document.getElementById('absent-tbody').innerHTML=DATA.absentIPs.map(a=>`
+    <tr><td style="font-weight:500">${a.ip}</td><td style="color:var(--color-text-secondary)">${a.lastSeen}</td><td>${a.expectedProtos}</td><td><span class="badge badge-red">Absent</span></td></tr>
+  `).join('');
+  const riskMap={Low:'badge-green',Medium:'badge-amber',High:'badge-red'};
+  document.getElementById('full-comp-tbody').innerHTML=DATA.internalIPs.map(a=>{
+    const protos=[...new Set(DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.proto))];
+    const ports=DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.port).filter(p=>p>0);
+    const peerCount=DATA.publicIPs.filter(p=>p.talks.includes(a.ip)).length;
+    const viaGW=!DATA.natBypass.includes(a.ip);
+    const score=Math.round((protos.length>0?40:0)+(viaGW?40:0)+(ports.length<5?20:10));
+    const sBadge=score>80?'badge-green':score>60?'badge-amber':'badge-red';
+    return `<tr>
+      <td style="font-weight:500">${a.ip}<br><span style="font-size:10px;color:var(--color-text-secondary)">${a.host}</span></td>
+      <td>${protos.map(p=>`<span class="badge badge-blue" style="margin:1px">${p}</span>`).join('')}</td>
+      <td style="font-size:11px">${ports.slice(0,3).join(', ')+(ports.length>3?'…':'')}</td>
+      <td><span class="status-dot dot-green"></span>Active</td>
+      <td>${peerCount}</td>
+      <td>${viaGW?'<span class="badge badge-green">Yes</span>':'<span class="badge badge-amber">Bypass</span>'}</td>
+      <td><span class="badge ${sBadge}">${score}%</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function downloadReport(){
+  const rows=[['IP','Hostname','Protocols','Ports','Via Gateway','Public Peers','Score']];
+  DATA.internalIPs.forEach(a=>{
+    const protos=[...new Set(DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.proto))].join('|');
+    const ports=DATA.protoPort.filter(p=>p.ips.includes(a.ip)).map(p=>p.port).filter(p=>p>0).join('|');
+    const peerCount=DATA.publicIPs.filter(p=>p.talks.includes(a.ip)).length;
+    const viaGW=!DATA.natBypass.includes(a.ip);
+    rows.push([a.ip,a.host,protos,ports,viaGW?'Yes':'Bypass',peerCount,viaGW?'90%':'60%']);
+  });
+  const csv=rows.map(r=>r.join(',')).join('\n');
+  const b=new Blob([csv],{type:'text/csv'});
+  const u=URL.createObjectURL(b);
+  const link=document.createElement('a');link.href=u;link.download='netflow_compliance_report.csv';link.click();
+}
+
+function simulateRefresh(){
+  windowProgress=0;
+  updateTimer();
+}
+
+function updateTimer(){
+  if(windowTimer) clearInterval(windowTimer);
+  const start=Date.now();
+  const WINDOW_MS=4*60*60*1000;
+  const step=()=>{
+    const elapsed=Date.now()-start;
+    windowProgress=Math.min(100,Math.round(elapsed/WINDOW_MS*100));
+    document.getElementById('timer-progress').style.width=windowProgress+'%';
+    document.getElementById('timer-text').textContent=windowProgress+'% elapsed';
+    const now=new Date();
+    const next=new Date(now.getTime()+(WINDOW_MS-elapsed));
+    document.getElementById('window-label').textContent='⏱ Window: 4h | Next refresh: '+next.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  };
+  step();
+  windowTimer=setInterval(step,30000);
+}
+
+renderOverview();
+renderAssets();
+renderProtocols();
+renderCompliance();
+updateTimer();
+</script>
