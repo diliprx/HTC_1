@@ -338,5 +338,13 @@ async def force_refresh():
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-report", action="store_true", help="Generate compliance report without starting the server")
+    args = parser.parse_args()
+    if args.run_report:
+        from scheduler import run_once
+        run_once()
+    else:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
