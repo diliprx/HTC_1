@@ -160,10 +160,9 @@ def _live_capture_worker(stop_event, status_dict, iface=None):
         # pkt.time is set by the OS kernel at capture time — far more accurate
         # than datetime.now() which reflects Python execution latency.
         try:
-            pkt_ts = datetime.fromtimestamp(float(pkt.time), tz=timezone.utc) \
-                              .strftime("%Y-%m-%d %H:%M:%S")
+            pkt_ts = datetime.fromtimestamp(float(pkt.time), timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
-            pkt_ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            pkt_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         buffer.append((
             src_ip, dst_ip, nexthop, 1, len(pkt),

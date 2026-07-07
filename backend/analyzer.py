@@ -18,7 +18,7 @@ Fulfils ALL HTC problem statement requirements:
 All hardcoded topology maps removed — everything is derived purely from captured traffic.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_connection, get_lock
 
 # ── Protocol / Port reference maps (standards-based, not topology-specific) ────
@@ -163,12 +163,11 @@ WINDOW_HOURS = 4
 
 def _window_clause():
     """
-    Returns a (clause_str, cutoff_value) tuple for parameterized queries.
-    Use as:  conn.execute(f"... WHERE {clause} ...", [cutoff])
-    The cutoff is a datetime object; DuckDB accepts it directly.
+    Returns a (clause_str, [cutoff_value]) tuple for parameterized queries.
+    Use as:  conn.execute(f"... WHERE {clause} ...", params)
     """
-    cutoff = datetime.now() - timedelta(hours=WINDOW_HOURS)
-    return "timestamp >= ?", cutoff
+    cutoff_value = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
+    return "timestamp >= ?", [cutoff_value]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -177,9 +176,8 @@ def _window_clause():
 def generate_report():
     lock = get_lock()
     conn = get_connection()
-    window_clause, window_cutoff = _window_clause()
+    window_clause, window_params = _window_clause()
     # Parameterized form — prevents SQL injection
-    # window_clause = "timestamp >= ?"  /  window_cutoff = datetime object
     # For the fallback (empty DB), we switch to a literal constant "1=1" with no param.
     use_param = True
 
@@ -187,7 +185,7 @@ def generate_report():
         try:
             total_flows = conn.execute(
                 f"SELECT COUNT(*) FROM flows WHERE {window_clause}",
-                [window_cutoff]
+                window_params
             ).fetchone()[0]
         except Exception as e:
             raise RuntimeError(f"[Analyzer] Flow count query failed: {e}")
@@ -199,12 +197,12 @@ def generate_report():
                 return _empty_report()
             # Use all data if nothing falls in window
             window_clause = "1=1"
-            window_cutoff = None
+            window_params = []
             use_param = False
 
         # ── 1. Identify Unique Internal Assets ────────────────────────────
         _w  = window_clause
-        _wp = [window_cutoff] if use_param else []
+        _wp = window_params
 
         assets_sql = f"""
             SELECT ip,
@@ -461,10 +459,8 @@ def generate_report():
             })
 
         # ── 7. Compliance Report — Ghost/Absent Assets ─────────────────────
-        # FIX: Cross-reference the persistent `assets` inventory table via LEFT JOIN
-        # instead of comparing DB traffic history to itself.
         # Assets registered in the inventory but with NO matching src_ip in the
-        # current window are flagged as ghost/absent.
+        # current window are flagged as ghost/absent using a LEFT JOIN to a subquery.
         absent_ips = []
         if use_param:  # Only meaningful when we have a real time window
             try:
@@ -473,27 +469,44 @@ def generate_report():
                         a.ip,
                         a.hostname,
                         a.expected_protocols,
-                        a.risk_tier,
-                        MAX(f.timestamp) AS last_seen
+                        a.risk_tier
                     FROM assets AS a
-                    LEFT JOIN flows AS f
-                        ON f.src_ip = a.ip
-                        AND f.{window_clause}
-                    GROUP BY a.ip, a.hostname, a.expected_protocols, a.risk_tier
-                    HAVING MAX(f.timestamp) IS NULL
-                       OR MAX(f.timestamp) < ?
+                    LEFT JOIN (
+                        SELECT DISTINCT src_ip
+                        FROM flows
+                        WHERE {window_clause}
+                    ) AS f ON a.ip = f.src_ip
+                    WHERE f.src_ip IS NULL
                 """
-                ghost_rows = conn.execute(ghost_sql, [window_cutoff, window_cutoff]).fetchall()
+                ghost_rows = conn.execute(ghost_sql, window_params).fetchall()
             except Exception as e:
                 ghost_rows = []
                 print(f"[Analyzer] Ghost-asset query failed: {e}")
 
-            for row_ip, hostname, exp_protos, risk_tier, last_seen_ts in ghost_rows:
+            for row_ip, hostname, exp_protos, risk_tier in ghost_rows:
+                # Find last seen timestamp historically
+                try:
+                    ls_row = conn.execute(
+                        "SELECT MAX(timestamp) FROM flows WHERE src_ip=? OR dst_ip=?",
+                        [row_ip, row_ip]
+                    ).fetchone()
+                    last_seen_ts = ls_row[0] if ls_row and ls_row[0] else None
+                except Exception:
+                    last_seen_ts = None
+
                 if last_seen_ts is None:
                     last_seen_label = "Never observed"
                 else:
                     try:
-                        delta = datetime.now() - datetime.fromisoformat(str(last_seen_ts))
+                        if isinstance(last_seen_ts, str):
+                            dt = datetime.fromisoformat(last_seen_ts.replace("Z", "+00:00"))
+                        else:
+                            dt = last_seen_ts
+                        if dt.tzinfo is not None:
+                            now_dt = datetime.now(timezone.utc)
+                        else:
+                            now_dt = datetime.now()
+                        delta = now_dt - dt
                         hrs   = int(delta.total_seconds() // 3600)
                         mins  = int((delta.total_seconds() % 3600) // 60)
                         last_seen_label = f"{hrs}h {mins}m ago"
@@ -556,14 +569,14 @@ def generate_threat_analysis():
     """
     lock = get_lock()
     conn = get_connection()
-    window_clause, window_cutoff = _window_clause()
+    window_clause, window_params = _window_clause()
     use_param = True
 
     with lock:
         try:
             total = conn.execute(
                 f"SELECT COUNT(*) FROM flows WHERE {window_clause}",
-                [window_cutoff]
+                window_params
             ).fetchone()[0]
         except Exception as e:
             raise RuntimeError(f"[Analyzer] Threat count query failed: {e}")
@@ -572,11 +585,11 @@ def generate_threat_analysis():
             if all_flows == 0:
                 return {'threats': [], 'summary': _empty_threat_summary()}
             window_clause = "1=1"
-            window_cutoff = None
+            window_params = []
             use_param = False
 
         _w  = window_clause
-        _wp = [window_cutoff] if use_param else []
+        _wp = window_params
 
         threats_by_asset = {}  # asset_ip -> list of threat dicts
 

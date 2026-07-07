@@ -31,7 +31,7 @@ function NetworkGraph({ type, data, onSelectNode, selectedNode }) {
   // ── Node type visual config ──────────────────────────────────────────────
   const NODE_STYLE = {
     internal:  { fill: '#00F2FE', stroke: '#00B4D8', color: '#080B10', r: 18 },
-    external:  { fill: '#FF3366', stroke: '#C21B4C', color: '#F8FAFC', r: 13 },
+    external:  { fill: '#FF3366', stroke: '#C21B4C', color: '#F8FAFC', r: 14 },
     gateway:   { fill: '#E5A93C', stroke: '#B27A1C', color: '#111622', r: 26 },
     nat_bypass:{ fill: '#FF5C00', stroke: '#CC4400', color: '#F8FAFC', r: 16, alert: true },
   };
