@@ -15,7 +15,7 @@ import threading
 import os
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from database import (
     init_db,
     get_connection,
@@ -95,8 +95,12 @@ app = FastAPI(title="HTC NetFlow Analyzer Pro", lifespan=lifespan)
 # Use specific origin list for credentialed requests, or drop credentials flag.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000",
-                   "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
+        "http://localhost:3000", "http://localhost:3001",
+        "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175",
+        "http://127.0.0.1:3000", "http://127.0.0.1:3001"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -152,9 +156,18 @@ def _live_capture_worker(stop_event, status_dict, iface=None):
         if src_priv and not dst_priv:
             nexthop = "10.0.0.1"
 
+        # FIX: Extract precise packet timestamp from libpcap's native epoch float
+        # pkt.time is set by the OS kernel at capture time — far more accurate
+        # than datetime.now() which reflects Python execution latency.
+        try:
+            pkt_ts = datetime.fromtimestamp(float(pkt.time), tz=timezone.utc) \
+                              .strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pkt_ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
         buffer.append((
             src_ip, dst_ip, nexthop, 1, len(pkt),
-            src_port, dst_port, proto_int, datetime.now()
+            src_port, dst_port, proto_int, pkt_ts
         ))
         status_dict["packets_captured"] += 1
 
@@ -185,6 +198,7 @@ def _live_capture_worker(stop_event, status_dict, iface=None):
         status_dict["error"] = str(e)
         print(f"[Capture] Crashed: {e}")
     finally:
+        status_dict["active"] = False
         print("[Capture] Worker stopped.")
 
 
@@ -317,6 +331,20 @@ async def get_report():
         raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
 
 
+@app.get("/api/threats")
+async def get_threats():
+    """
+    Digital Asset Protection — threat analysis against all internal assets.
+    Detects: public IP access, malicious IPs, dangerous protocols,
+    port scans, excessive connections, and lateral movement.
+    Returns per-asset threat lists with severity and remediation guidance.
+    """
+    try:
+        return analyzer.generate_threat_analysis()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Threat analysis failed: {e}")
+
+
 @app.get("/api/health")
 def health():
     lock = get_lock()
@@ -339,6 +367,7 @@ async def force_refresh():
 
 if __name__ == "__main__":
     import argparse
+    import sys
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-report", action="store_true", help="Generate compliance report without starting the server")
     args = parser.parse_args()
@@ -347,4 +376,13 @@ if __name__ == "__main__":
         run_once()
     else:
         import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        try:
+            print("Starting NetFlow Analytics Backend on http://localhost:8000 ...")
+            uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+        except (KeyboardInterrupt, SystemExit):
+            print("\n[!] KeyboardInterrupt caught. Shutting down the NetFlow engine gracefully...")
+            print("[✓] Server stopped cleanly. Bye machan!")
+            try:
+                sys.exit(0)
+            except SystemExit:
+                os._exit(0)

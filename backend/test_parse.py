@@ -1,4 +1,4 @@
-from database import get_connection, init_db
+from database import get_connection, init_db, close_connection
 from pcap_parser import parse_pcap_file
 
 init_db()
@@ -6,7 +6,7 @@ init_db()
 conn = get_connection()
 before = conn.execute("SELECT COUNT(*) FROM flows").fetchone()[0]
 print(f"Flows before parse: {before}")
-conn.close()
+close_connection()
 
 count, msg = parse_pcap_file("test_traffic.pcap")
 print(f"Flows inserted by parser: {count}")
@@ -28,4 +28,4 @@ print("\nTop flow groups:")
 for row in rows:
     proto = {6:'TCP', 17:'UDP', 1:'ICMP'}.get(row[2], str(row[2]))
     print(f"  {row[0]:16} -> {row[1]:16} [{proto}]  count={row[3]}")
-conn.close()
+close_connection()

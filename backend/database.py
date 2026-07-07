@@ -109,6 +109,38 @@ def init_db():
                 CREATE SEQUENCE IF NOT EXISTS flow_id_seq;
             """)
 
+            # ------------------------------------------------------------------
+            # Asset Inventory Table
+            # ------------------------------------------------------------------
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS assets (
+                    ip                 VARCHAR PRIMARY KEY,
+                    hostname           VARCHAR,
+                    expected_protocols VARCHAR,
+                    risk_tier          VARCHAR
+                );
+            """)
+
+            # Idempotent seed — insert only when the table is empty
+            existing = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+            if existing == 0:
+                seed_rows = [
+                    ('10.0.0.1',       'core-router',       'TCP,UDP,ICMP', 'Low'),
+                    ('10.0.0.10',      'workstation-alpha',  'TCP,UDP',      'Medium'),
+                    ('10.0.0.20',      'file-server',        'TCP,SMB',      'High'),
+                    ('192.168.1.100',  'dev-laptop',         'TCP,UDP',      'Medium'),
+                    ('192.168.1.200',  'iot-device',         'UDP,ICMP',     'High'),
+                ]
+                conn.executemany(
+                    """
+                    INSERT INTO assets (ip, hostname, expected_protocols, risk_tier)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (ip) DO NOTHING
+                    """,
+                    seed_rows
+                )
+                print(f"[Database] Seeded {len(seed_rows)} default asset records.")
+
             conn.commit()
 
             # Flush to disk
@@ -186,10 +218,14 @@ if __name__ == "__main__":
 
         init_db()
 
+        conn = get_connection()
+        asset_count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+
         print("===================================")
         print(" DuckDB initialized successfully")
         print(" Database :", DB_FILE)
         print(" Connected:", is_connected())
+        print(f" Assets   : {asset_count} rows in inventory")
         print("===================================")
 
     finally:

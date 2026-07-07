@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Activity, ShieldAlert, Network, RefreshCw, FileText, Upload, Trash2, ShieldCheck, CheckCircle2, AlertTriangle, AlertCircle, Search } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Activity, ShieldAlert, Network, RefreshCw, FileText, Upload, Trash2, ShieldCheck, CheckCircle2, AlertTriangle, AlertCircle, Search, Shield, Zap, Eye, Lock } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 import NetworkGraph from './NetworkGraph';
 
@@ -24,13 +24,22 @@ function App() {
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('');
+  const [protoSearchQuery, setProtoSearchQuery] = useState('');
+  const [protoFilterRisk, setProtoFilterRisk] = useState('');
+  const [selectedNode, setSelectedNode] = useState(null);
   
   // Capture Controls
   const [captureStatus, setCaptureStatus] = useState({ active: false, packets_captured: 0 });
   const [uploading, setUploading] = useState(false);
   const [actionMessage, setActionMessage] = useState(null);
   
-  // Timer progress (simulating 4-hour window countdown)
+  // Digital asset protection threats
+  const [threats, setThreats] = useState(null);
+  
+  // Custom reset confirmation modal state
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+
+  // Timer progress (synced to real 4-hour UTC boundaries)
   const [progressWidth, setProgressWidth] = useState(0);
   const fileInputRef = useRef(null);
 
@@ -39,13 +48,24 @@ function App() {
       const response = await fetch('http://localhost:8000/api/report');
       if (!response.ok) throw new Error('API Error');
       const json = await response.json();
-      
       setData(json);
       setIsOffline(false);
     } catch {
       console.warn('Backend API offline.');
       setData(null);
       setIsOffline(true);
+    }
+  };
+
+  const fetchThreats = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/threats');
+      if (response.ok) {
+        const json = await response.json();
+        setThreats(json);
+      }
+    } catch {
+      // Keep local defaults
     }
   };
 
@@ -88,7 +108,6 @@ function App() {
   };
 
   const handleClearDatabase = async () => {
-    if (!window.confirm("Clear all captured traffic and reset the database?")) return;
     try {
       const res = await fetch('http://localhost:8000/api/clear', { method: 'POST' });
       if (res.ok) {
@@ -124,6 +143,7 @@ function App() {
         const body = await res.json();
         setActionMessage({ type: 'success', text: body.message });
         fetchData();
+        fetchThreats();
       } else {
         const body = await res.json();
         setActionMessage({ type: 'error', text: body.detail || 'Failed to parse PCAP file.' });
@@ -140,6 +160,7 @@ function App() {
     try {
       await fetch('http://localhost:8000/api/refresh');
       await fetchData();
+      await fetchThreats();
       setActionMessage({ type: 'success', text: 'Re-evaluating compliance datasets...' });
     } catch {
       await fetchData();
@@ -150,11 +171,11 @@ function App() {
   // The window anchors to 4-hour UTC boundaries (00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
   const WINDOW_SECONDS = 4 * 60 * 60; // 14400 seconds
 
-  const computeWindowProgress = () => {
+  const computeWindowProgress = useCallback(() => {
     const now = Math.floor(Date.now() / 1000); // current epoch seconds
     const elapsed = now % WINDOW_SECONDS; // seconds elapsed in current 4h window
     return (elapsed / WINDOW_SECONDS) * 100;
-  };
+  }, [WINDOW_SECONDS]);
 
   const computeTimeRemaining = () => {
     const now = Math.floor(Date.now() / 1000);
@@ -168,6 +189,7 @@ function App() {
   useEffect(() => {
     fetchData();
     fetchCaptureStatus();
+    fetchThreats();
     setProgressWidth(computeWindowProgress());
     
     // Poll backend every 15 seconds for data refresh
@@ -190,7 +212,7 @@ function App() {
       clearInterval(dataInterval);
       clearInterval(progressInterval);
     };
-  }, []);
+  }, [computeWindowProgress]);
 
   // Compute stats metrics dynamically
   const assetsList = data?.unique_assets || [];
@@ -229,7 +251,7 @@ function App() {
 
   // Dynamic Compliance calculations
   const calculateAssetCompliance = (asset) => {
-    const isBypass = natBypassList.includes(asset.ip);
+    const isBypass = natBypassList.some(nb => nb.ip === asset.ip);
     const assetProtos = protocolsList.filter(p => p.ips.includes(asset.ip));
     const activePortsCount = assetProtos.length;
 
@@ -250,7 +272,7 @@ function App() {
   const assetComplianceDetails = assetsList.map(a => ({
     ...a,
     score: calculateAssetCompliance(a),
-    viaGateway: !natBypassList.includes(a.ip),
+    viaGateway: !natBypassList.some(nb => nb.ip === a.ip),
     protosUsed: [...new Set(protocolsList.filter(p => p.ips.includes(a.ip)).map(p => p.proto))]
   }));
 
@@ -262,23 +284,73 @@ function App() {
     : null;
 
   const handleExportCSV = () => {
-    const headers = ['IP Address', 'Hostname', 'Type', 'Compliance %', 'Via Gateway', 'Protocols Used', 'Traffic (Bytes)'];
-    const rows = assetComplianceDetails.map(a => [
+    let csvContent = "";
+
+    // 1. Report Title & Meta
+    csvContent += "=== HTC NETWORK COMPLIANCE DASHBOARD REPORT ===\n";
+    csvContent += `Generated: ${new Date().toISOString()}\n`;
+    csvContent += `Rolling Time Window: ${data?.window_hours || 4} Hours\n\n`;
+
+    // 2. Section: Internal Asset Compliance Audit
+    csvContent += "SECTION 1: INTERNAL ASSET COMPLIANCE AUDIT\n";
+    const assetHeaders = ['IP Address', 'Hostname', 'Type', 'Compliance Score', 'Gateway Routing Status', 'Protocols Observed', 'Traffic Volume (Bytes)', 'Flow Count'];
+    const assetRows = assetComplianceDetails.map(a => [
       a.ip,
       a.host,
       a.type,
       `${a.score}%`,
-      a.viaGateway ? 'Yes' : 'NAT Bypass',
-      a.protosUsed.join('|'),
-      a.bytes
+      a.viaGateway ? 'COMPLIANT (Via Gateway)' : 'NON-COMPLIANT (NAT Bypass)',
+      a.protosUsed.join('|') || 'None',
+      a.bytes || 0,
+      a.flows || 0
     ]);
+    csvContent += [assetHeaders, ...assetRows].map(e => e.join(",")).join("\n") + "\n\n";
 
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    // 3. Section: Configured Gateway Routing
+    csvContent += "SECTION 2: CONFIGURED GATEWAY ROUTING\n";
+    const gwHeaders = ['Gateway IP', 'Hostname', 'Gateway Type', 'Status'];
+    const gwRows = gatewaysList.map(g => [
+      g.ip,
+      g.host,
+      g.type,
+      'Active & Monitoring'
+    ]);
+    csvContent += [gwHeaders, ...gwRows].map(e => e.join(",")).join("\n") + "\n\n";
+
+    // 4. Section: NAT Bypass Alarms
+    csvContent += "SECTION 3: NAT BYPASS ALARMS (ROUTING INTEGRITY VIOLATIONS)\n";
+    const bypassHeaders = ['Asset IP', 'Hostname', 'Observed NextHop', 'Example Destination IP', 'Risk Classification'];
+    const bypassRows = natBypassList.map(b => [
+      b.ip,
+      b.host,
+      b.nexthop,
+      b.example_dst,
+      b.risk
+    ]);
+    if (bypassRows.length === 0) {
+      csvContent += "No routing integrity violations detected. All internal hosts comply with gateway routing.\n\n";
+    } else {
+      csvContent += [bypassHeaders, ...bypassRows].map(e => e.join(",")).join("\n") + "\n\n";
+    }
+
+    // 5. Section: External Public Peers
+    csvContent += "SECTION 4: EXTERNAL PUBLIC PEERS AUDIT\n";
+    const peerHeaders = ['Public IP', 'Geo-Location', 'Target Asset IPs', 'Protocols Used', 'Bytes Received', 'Threat Level'];
+    const peerRows = publicIPsList.map(p => [
+      p.ip,
+      p.geo.replace(/,/g, " -"), // Clean commas to avoid breaking columns
+      (p.talksto || []).join('|'),
+      (p.proto || []).join('|'),
+      p.bytesIn || 0,
+      `${p.threat}/100`
+    ]);
+    csvContent += [peerHeaders, ...peerRows].map(e => e.join(",")).join("\n") + "\n\n";
+
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `netflow_compliance_report_${new Date().toISOString().slice(0,10)}.csv`);
+    link.setAttribute("download", `htc_netflow_compliance_report_${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -354,7 +426,7 @@ function App() {
 
           {/* Clear DB */}
           <button
-            onClick={handleClearDatabase}
+            onClick={() => setIsResetModalOpen(true)}
             className="flex items-center gap-2 bg-[#121722] hover:bg-rose-950/20 hover:text-rose-400 hover:border-rose-500/30 text-xs font-mono text-slate-400 border border-slate-700 px-3.5 py-2 rounded-md cursor-pointer transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -422,6 +494,7 @@ function App() {
           { id: 'assets', label: 'Assets & IPs', icon: <ShieldAlert className="w-3.5 h-3.5" /> },
           { id: 'protocols', label: 'Protocols & Ports', icon: <Network className="w-3.5 h-3.5" /> },
           { id: 'graphs', label: 'Relationship Graphs', icon: <Network className="w-3.5 h-3.5" /> },
+          { id: 'protection', label: 'Asset Protection', icon: <Shield className="w-3.5 h-3.5" />, alert: threats?.summary?.critical_count > 0 },
           { id: 'compliance', label: 'Compliance Report', icon: <FileText className="w-3.5 h-3.5" /> },
         ].map(tab => (
           <button
@@ -435,6 +508,9 @@ function App() {
           >
             {tab.icon}
             {tab.label}
+            {tab.alert && (
+              <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+            )}
           </button>
         ))}
       </div>
@@ -501,12 +577,12 @@ function App() {
                     <CheckCircle2 className="w-4 h-4" /> No gateway bypass flows detected.
                   </div>
                 ) : (
-                  natBypassList.map((ip, idx) => (
+                  natBypassList.map((bypass, idx) => (
                     <div key={idx} className="flex items-center justify-between border-b border-[#1e293b] pb-2">
                       <div className="flex items-center gap-3">
                         <span className="h-2 w-2 rounded-full bg-[#FF3366] animate-pulse"></span>
-                        <span className="text-xs font-mono font-medium text-white">{ip}</span>
-                        <span className="text-xs text-[#94A3B8] font-mono">({getHostname(ip)})</span>
+                        <span className="text-xs font-mono font-medium text-white">{bypass.ip}</span>
+                        <span className="text-xs text-[#94A3B8] font-mono">({bypass.host})</span>
                       </div>
                       <span className="bg-rose-500/10 text-[#FF3366] border border-rose-500/30 text-[10px] font-mono px-2 py-0.5 rounded uppercase tracking-wider">NAT Bypass</span>
                     </div>
@@ -695,7 +771,7 @@ function App() {
                         <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
                           <td className="p-3 text-white font-semibold">{peer.ip}</td>
                           <td className="p-3 text-slate-400">{peer.geo}</td>
-                          <td className="p-3 text-slate-300 text-[11px]">{peer.talks.join(', ')}</td>
+                          <td className="p-3 text-slate-300 text-[11px]">{(peer.talksto || []).join(', ')}</td>
                           <td className="p-3">
                             <div className="flex gap-1 flex-wrap">
                               {peer.proto.map((pr, pidx) => (
@@ -787,6 +863,31 @@ function App() {
             </div>
           </div>
 
+          {/* Filters Bar */}
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="relative flex-grow">
+              <Search className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
+              <input 
+                type="text" 
+                placeholder="Search protocol, port, or service name..." 
+                value={protoSearchQuery}
+                onChange={e => setProtoSearchQuery(e.target.value)}
+                className="w-full bg-[#111622] border border-[#1e293b] rounded-md py-2 pl-9 pr-4 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-[#00F2FE]"
+              />
+            </div>
+            <select
+              value={protoFilterRisk}
+              onChange={e => setProtoFilterRisk(e.target.value)}
+              className="bg-[#111622] border border-[#1e293b] rounded-md py-2 px-3 text-xs font-mono text-slate-300 focus:outline-none focus:border-[#00F2FE]"
+            >
+              <option value="">All Risk Levels</option>
+              <option value="Low">Low Risk</option>
+              <option value="Medium">Medium Risk</option>
+              <option value="High">High Risk</option>
+              <option value="Critical">Critical Risk</option>
+            </select>
+          </div>
+
           {/* Protocols and Ports details grid */}
           <div className="bg-[#111622] border border-[#1e293b] rounded-lg overflow-hidden">
             <div className="p-4 border-b border-[#1e293b]">
@@ -813,26 +914,35 @@ function App() {
                       </td>
                     </tr>
                   ) : (
-                    protocolsList.map((service, idx) => {
-                      const riskBadge = service.risk === 'High' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                                        service.risk === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                                        'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-                      return (
-                        <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
-                          <td className="p-3">
-                            <span className="bg-[#1e293b] text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded">{service.proto}</span>
-                          </td>
-                          <td className="p-3 text-white">{service.port || '—'}</td>
-                          <td className="p-3 text-slate-400">{service.service}</td>
-                          <td className="p-3 text-right text-slate-300">{service.flows.toLocaleString()}</td>
-                          <td className="p-3 text-right text-slate-200">{fmtBytes(service.bytes)}</td>
-                          <td className="p-3 text-right text-slate-400">{service.ips.length} assets</td>
-                          <td className="p-3 text-right">
-                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${riskBadge}`}>{service.risk}</span>
-                          </td>
-                        </tr>
-                      );
-                    })
+                    protocolsList
+                      .filter(service => {
+                        const query = protoSearchQuery.toLowerCase();
+                        const matchQuery = service.proto.toLowerCase().includes(query) || 
+                                           String(service.port).includes(query) || 
+                                           service.service.toLowerCase().includes(query);
+                        const matchRisk = !protoFilterRisk || service.risk === protoFilterRisk;
+                        return matchQuery && matchRisk;
+                      })
+                      .map((service, idx) => {
+                        const riskBadge = service.risk === 'High' || service.risk === 'Critical' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                          service.risk === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                          'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                        return (
+                          <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
+                            <td className="p-3">
+                              <span className="bg-[#1e293b] text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded">{service.proto}</span>
+                            </td>
+                            <td className="p-3 text-white">{service.port || '—'}</td>
+                            <td className="p-3 text-slate-400">{service.service}</td>
+                            <td className="p-3 text-right text-slate-300">{service.flows.toLocaleString()}</td>
+                            <td className="p-3 text-right text-slate-200">{fmtBytes(service.bytes)}</td>
+                            <td className="p-3 text-right text-slate-400">{service.ips.length} assets</td>
+                            <td className="p-3 text-right">
+                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${riskBadge}`}>{service.risk}</span>
+                            </td>
+                          </tr>
+                        );
+                      })
                   )}
                 </tbody>
               </table>
@@ -842,32 +952,358 @@ function App() {
       )}
 
       {activeTab === 'graphs' && (
-        <div className="flex flex-col gap-4 animate-fade-in">
-          {/* Sub Navigation controls */}
-          <div className="flex gap-2">
-            {[
-              { id: 'asset-pubip', label: 'Asset ↔ Public IPs' },
-              { id: 'asset-proto', label: 'Asset ↔ Protocols' },
-              { id: 'gateway-flow', label: 'Gateway Flow Topology' },
-            ].map(nav => (
-              <button
-                key={nav.id}
-                onClick={() => setActiveGraph(nav.id)}
-                className={`py-1.5 px-3.5 text-xs font-mono border rounded transition-all cursor-pointer ${
-                  activeGraph === nav.id 
-                  ? 'bg-[#185FA5]/20 text-[#00F2FE] border-[#185FA5]/40 font-medium' 
-                  : 'bg-[#111622] text-[#94A3B8] border-slate-800 hover:text-white'
-                }`}
-              >
-                {nav.label}
-              </button>
-            ))}
+        <div className="flex flex-col lg:flex-row gap-6 animate-fade-in">
+          
+          {/* Left Column: Visual Graph */}
+          <div className="flex-grow flex flex-col gap-4">
+            {/* Sub Navigation controls */}
+            <div className="flex gap-2">
+              {[
+                { id: 'asset-pubip', label: 'Asset ↔ Public IPs' },
+                { id: 'asset-proto', label: 'Asset ↔ Protocols' },
+                { id: 'gateway-flow', label: 'Gateway Flow Topology' },
+              ].map(nav => (
+                <button
+                  key={nav.id}
+                  onClick={() => {
+                    setActiveGraph(nav.id);
+                    setSelectedNode(null); // Reset detail selector on tab change
+                  }}
+                  className={`py-1.5 px-3.5 text-xs font-mono border rounded transition-all cursor-pointer ${
+                    activeGraph === nav.id 
+                    ? 'bg-[#185FA5]/20 text-[#00F2FE] border-[#185FA5]/40 font-medium' 
+                    : 'bg-[#111622] text-[#94A3B8] border-slate-800 hover:text-white'
+                  }`}
+                >
+                  {nav.label}
+                </button>
+              ))}
+            </div>
+
+            {/* SVG Graph Component container */}
+            <div className="h-[450px]">
+              <NetworkGraph 
+                type={activeGraph} 
+                data={data} 
+                onSelectNode={setSelectedNode} 
+                selectedNode={selectedNode}
+              />
+            </div>
           </div>
 
-          {/* SVG Graph Component container */}
-          <div className="h-[480px]">
-            <NetworkGraph type={activeGraph} data={data} />
+          {/* Right Column: Node Telemetry Inspector Panel */}
+          <div className="w-full lg:w-[320px] shrink-0 flex flex-col">
+            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5 h-full flex flex-col justify-between min-h-[280px] lg:min-h-[450px]">
+              {selectedNode ? (
+                <div>
+                  <div className="border-b border-[#1e293b] pb-3 mb-4">
+                    <span className="text-[9px] text-[#00F2FE] font-mono uppercase tracking-wider block mb-1">
+                      {selectedNode.role}
+                    </span>
+                    <h3 className="text-base font-bold text-white font-mono break-all">
+                      {selectedNode.ip}
+                    </h3>
+                    {selectedNode.host && (
+                      <span className="text-xs text-[#94A3B8] font-mono mt-1.5 block">
+                        Host: <span className="text-slate-300 font-semibold">{selectedNode.host}</span>
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-4 font-mono text-xs">
+                    {/* Geolocation */}
+                    {selectedNode.geo && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Geolocation</span>
+                        <span className="text-slate-100 font-medium">{selectedNode.geo}</span>
+                      </div>
+                    )}
+
+                    {/* Threat evaluation */}
+                    {selectedNode.threat !== undefined && selectedNode.threat > 0 && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Threat Score</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                          selectedNode.threat > 50 ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
+                          selectedNode.threat > 20 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
+                          'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                        }`}>
+                          {selectedNode.threat}/100 Risk Rating
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Associated protocols */}
+                    {selectedNode.protocols && selectedNode.protocols.length > 0 && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1.5">Observed Protocols</span>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {selectedNode.protocols.map((pr, pidx) => (
+                            <span key={pidx} className="bg-[#185FA5]/15 text-[#00F2FE] text-[9px] px-1.5 py-0.2 rounded border border-[#185FA5]/30">
+                              {pr}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Associated ports */}
+                    {selectedNode.ports && selectedNode.ports.length > 0 && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Audited Dest Ports</span>
+                        <span className="text-slate-300 block max-h-[60px] overflow-y-auto pr-1">
+                          {selectedNode.ports.join(', ')}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Traffic metrics for assets */}
+                    {selectedNode.bytes !== undefined && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Metrics</span>
+                        <div className="mt-1.5 space-y-1.5">
+                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
+                            <span>Traffic:</span>
+                            <span className="font-bold text-slate-100">{fmtBytes(selectedNode.bytes)}</span>
+                          </div>
+                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
+                            <span>Flows:</span>
+                            <span className="font-bold text-slate-100">{selectedNode.flows}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Traffic metrics for peers */}
+                    {selectedNode.bytesIn !== undefined && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Metrics</span>
+                        <div className="mt-1.5 space-y-1.5">
+                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
+                            <span>Inbound Bytes:</span>
+                            <span className="font-bold text-slate-100">{fmtBytes(selectedNode.bytesIn)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Peer connections */}
+                    {selectedNode.talksto && selectedNode.talksto.length > 0 && (
+                      <div>
+                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Target Internal IPs</span>
+                        <div className="max-h-[120px] overflow-y-auto space-y-1 pr-1">
+                          {selectedNode.talksto.map((targetIp, idx) => (
+                            <div key={idx} className="flex justify-between text-slate-300 border-b border-[#1e293b]/40 pb-1 text-[11px]">
+                              <span className="text-white font-semibold">{targetIp}</span>
+                              <span className="text-[#94A3B8] text-[9px]">({getHostname(targetIp)})</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col justify-center items-center h-full text-center py-10 my-auto">
+                  <Network className="w-8 h-8 text-slate-500 mb-3 animate-pulse" />
+                  <span className="text-slate-400 font-mono text-xs font-semibold mb-1">Telemetry Inspector</span>
+                  <span className="text-slate-500 font-mono text-[10px] max-w-[200px] leading-relaxed">
+                    Click any node in the topology visualization to display active telemetry, geolocation, threat levels, and traffic flow details.
+                  </span>
+                </div>
+              )}
+
+              {selectedNode && (
+                <button 
+                  onClick={() => setSelectedNode(null)}
+                  className="w-full mt-4 bg-[#121722] hover:bg-[#1c2436] text-[10px] font-mono text-slate-400 border border-slate-700 py-1.5 rounded transition-colors cursor-pointer"
+                >
+                  Clear Selection
+                </button>
+              )}
+            </div>
           </div>
+
+        </div>
+      )}
+
+      {/* ─── ASSET PROTECTION TAB ─────────────────────────────────────── */}
+      {activeTab === 'protection' && (
+        <div className="flex flex-col gap-6 animate-fade-in">
+
+          {/* Header */}
+          <div className="flex flex-col md:flex-row justify-between md:items-start gap-3">
+            <div>
+              <h3 className="text-sm font-semibold tracking-tight text-white uppercase tracking-wider font-mono flex items-center gap-2">
+                <Shield className="w-4 h-4 text-rose-400" />
+                Digital Asset Protection
+              </h3>
+              <p className="text-[10px] text-[#94A3B8] font-mono mt-0.5">Real-time threat analysis derived from captured network traffic</p>
+            </div>
+            {threats?.summary && (
+              <div className="flex gap-2 flex-wrap">
+                <span className="bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
+                  <AlertCircle className="w-3 h-3" />
+                  {threats.summary.critical_count} Critical
+                </span>
+                <span className="bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
+                  <AlertTriangle className="w-3 h-3" />
+                  {threats.summary.high_count} High
+                </span>
+                <span className="bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
+                  <Activity className="w-3 h-3" />
+                  {threats.summary.medium_count} Medium
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Threat type summary strip */}
+          {threats?.summary && threats.summary.total_threats > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+              {[
+                { key: 'PUBLIC_ACCESS',         label: 'Public Access',       icon: <Eye className="w-3.5 h-3.5" />,       color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                { key: 'MALICIOUS_IP',          label: 'Malicious IPs',       icon: <AlertCircle className="w-3.5 h-3.5" />, color: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
+                { key: 'DANGEROUS_PROTOCOL',    label: 'Dangerous Protocols', icon: <Zap className="w-3.5 h-3.5" />,        color: 'text-orange-400 bg-orange-500/10 border-orange-500/20' },
+                { key: 'PORT_SCAN',             label: 'Port Scans',          icon: <Search className="w-3.5 h-3.5" />,     color: 'text-purple-400 bg-purple-500/10 border-purple-500/20' },
+                { key: 'EXCESSIVE_CONNECTIONS', label: 'Excessive Conns',     icon: <Activity className="w-3.5 h-3.5" />,   color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' },
+                { key: 'LATERAL_MOVEMENT',      label: 'Lateral Movement',    icon: <Network className="w-3.5 h-3.5" />,    color: 'text-pink-400 bg-pink-500/10 border-pink-500/20' },
+              ].map(item => (
+                <div key={item.key} className={`border rounded-lg p-3 flex flex-col items-center gap-1.5 ${item.color}`}>
+                  {item.icon}
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-center leading-tight">{item.label}</span>
+                  <span className="text-lg font-bold font-mono">{threats.summary.by_type[item.key] || 0}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {(!threats || threats.threats.length === 0) && (
+            <div className="bg-gradient-to-r from-emerald-900/10 to-teal-900/10 border border-emerald-500/20 rounded-lg p-10 text-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="h-12 w-12 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                  <ShieldCheck className="w-6 h-6 text-emerald-400" />
+                </div>
+                <h4 className="text-sm font-bold text-white font-mono">
+                  {data ? 'No Threats Detected' : 'No Traffic Data Yet'}
+                </h4>
+                <p className="text-xs text-[#94A3B8] font-mono max-w-md mx-auto leading-relaxed">
+                  {data
+                    ? 'All captured traffic appears clean. No public IP access, malicious IPs, dangerous protocols, port scans, or lateral movement detected.'
+                    : 'Upload a PCAP file or start live capture. The protection engine will automatically scan all flows for threats against your digital assets.'
+                  }
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Per-asset threat cards */}
+          {threats?.threats && threats.threats.length > 0 && (
+            <div className="flex flex-col gap-4">
+              {threats.threats.map((asset, assetIdx) => {
+                const borderColor = asset.worst_severity === 'Critical' ? 'border-rose-500/40'
+                                  : asset.worst_severity === 'High' ? 'border-amber-500/30'
+                                  : 'border-blue-500/20';
+                const headerBg = asset.worst_severity === 'Critical' ? 'bg-rose-500/10'
+                               : asset.worst_severity === 'High' ? 'bg-amber-500/10'
+                               : 'bg-blue-500/10';
+                const severityColor = asset.worst_severity === 'Critical' ? 'text-rose-400'
+                                    : asset.worst_severity === 'High' ? 'text-amber-400'
+                                    : 'text-blue-400';
+
+                return (
+                  <div key={assetIdx} className={`bg-[#111622] border rounded-lg overflow-hidden ${borderColor}`}>
+                    {/* Asset header */}
+                    <div className={`${headerBg} border-b ${borderColor} px-4 py-3 flex items-center justify-between`}>
+                      <div className="flex items-center gap-3">
+                        <Lock className={`w-4 h-4 ${severityColor}`} />
+                        <div>
+                          <span className="text-white font-mono font-bold text-sm">{asset.asset_ip}</span>
+                          <span className="text-[#94A3B8] font-mono text-[10px] ml-2">({asset.asset_host})</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {asset.critical_count > 0 && (
+                          <span className="bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
+                            {asset.critical_count} CRITICAL
+                          </span>
+                        )}
+                        {asset.high_count > 0 && (
+                          <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
+                            {asset.high_count} HIGH
+                          </span>
+                        )}
+                        {asset.medium_count > 0 && (
+                          <span className="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
+                            {asset.medium_count} MEDIUM
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Individual threats */}
+                    <div className="divide-y divide-[#1e293b]/40">
+                      {asset.threats.map((threat, threatIdx) => {
+                        const tColor = threat.severity === 'Critical' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20'
+                                     : threat.severity === 'High' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                                     : 'text-blue-400 bg-blue-500/10 border-blue-500/20';
+                        const typeIcons = {
+                          'PUBLIC_ACCESS': <Eye className="w-3.5 h-3.5" />,
+                          'MALICIOUS_IP': <AlertCircle className="w-3.5 h-3.5" />,
+                          'DANGEROUS_PROTOCOL': <Zap className="w-3.5 h-3.5" />,
+                          'PORT_SCAN': <Search className="w-3.5 h-3.5" />,
+                          'EXCESSIVE_CONNECTIONS': <Activity className="w-3.5 h-3.5" />,
+                          'LATERAL_MOVEMENT': <Network className="w-3.5 h-3.5" />,
+                        };
+                        return (
+                          <div key={threatIdx} className="px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2.5 min-w-0">
+                                <span className={`mt-0.5 flex-shrink-0 flex items-center justify-center rounded p-1 border ${tColor}`}>
+                                  {typeIcons[threat.type] || <AlertTriangle className="w-3.5 h-3.5" />}
+                                </span>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                    <span className="text-[10px] font-mono font-bold text-slate-200 uppercase tracking-wider">
+                                      {threat.type.replace(/_/g, ' ')}
+                                    </span>
+                                    {threat.source_ip && (
+                                      <span className="text-[9px] font-mono text-[#94A3B8]">← {threat.source_ip}</span>
+                                    )}
+                                    {threat.source_geo && (
+                                      <span className="text-[9px] font-mono text-slate-500">{threat.source_geo}</span>
+                                    )}
+                                    {threat.source_threat > 0 && (
+                                      <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${tColor}`}>
+                                        threat: {threat.source_threat}/100
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[11px] text-slate-400 font-mono leading-relaxed">{threat.description}</p>
+                                </div>
+                              </div>
+                              <div className="flex-shrink-0">
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded border font-mono ${tColor}`}>
+                                  {threat.severity}
+                                </span>
+                              </div>
+                            </div>
+                            {threat.recommendation && (
+                              <div className="mt-2 ml-8 bg-[#0c101a] border border-[#1e293b] rounded p-2.5">
+                                <span className="text-[9px] font-mono uppercase tracking-wider text-emerald-400 block mb-0.5">Recommendation</span>
+                                <p className="text-[10px] font-mono text-slate-300 leading-relaxed">{threat.recommendation}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -1004,28 +1440,49 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Sleek Custom Dark-Themed Reset Confirmation Modal */}
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fade-in px-4">
+          <div className="bg-[#0c101a] border border-slate-800 rounded-xl p-6 w-full max-w-md shadow-2xl transition-all scale-100 select-none">
+            <div className="flex items-center space-x-3 text-rose-500 mb-4">
+              <AlertTriangle className="h-6 w-6 text-rose-500 animate-pulse" />
+              <h3 className="text-lg font-bold text-slate-100 font-mono">Confirm Database Reset</h3>
+            </div>
+            
+            <p className="text-xs md:text-sm text-slate-400 mb-6 leading-relaxed font-mono">
+              Are you absolutely sure you want to clear all captured traffic flows and reset the database? This action cannot be undone.
+            </p>
+            
+            <div className="flex justify-end space-x-3 font-mono text-xs">
+              <button
+                onClick={() => setIsResetModalOpen(false)}
+                className="px-4 py-2 font-medium text-slate-400 bg-slate-900/60 border border-slate-800 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setIsResetModalOpen(false);
+                  await handleClearDatabase(); 
+                }}
+                className="px-4 py-2 font-medium text-white bg-rose-600 rounded-lg hover:bg-rose-500 active:bg-rose-700 shadow-lg shadow-rose-950/20 transition-all cursor-pointer"
+              >
+                Delete Everything
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Global hostname resolver helper (matches backend configuration)
+// Hostname derived purely from the IP last-octet (no hardcoded topology)
 function getHostname(ip) {
-  const HOSTNAME_MAP = {
-    '10.0.0.10': 'web-server-01',
-    '10.0.0.11': 'web-server-02',
-    '10.0.0.20': 'db-server-01',
-    '10.0.0.21': 'db-server-02',
-    '10.0.0.30': 'app-server-01',
-    '10.0.0.40': 'mail-server',
-    '10.0.0.50': 'file-server',
-    '10.0.1.100': 'workstation-A',
-    '10.0.1.101': 'workstation-B',
-    '10.0.1.102': 'workstation-C',
-    '192.168.10.5': 'dev-machine',
-    '10.0.0.1': 'core-router',
-    '10.0.0.2': 'firewall-01',
-  };
-  return HOSTNAME_MAP[ip] || `node-${ip.split('.').pop()}`;
+  if (!ip) return 'unknown';
+  const last = ip.split('.').pop();
+  return `node-${last}`;
 }
 
 export default App;
