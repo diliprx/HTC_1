@@ -1,22 +1,18 @@
+"""
+HTC NetFlow Collector Pro — High-Performance Async UDP Daemon
+=============================================================
+RFC-compliant NetFlow v5 receiver on UDP port 2055 with micro-batching,
+auto-flush watchdog, and UTC ISO timestamping.
+"""
+
 import asyncio
 import struct
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from database import get_connection, get_lock
 
-# NetFlow v5 header: version(2) count(2) uptime(4) unix_secs(4) unix_nsecs(4)
-#                    flow_seq(4) engine_type(1) engine_id(1) sampling(2) = 24 bytes
 HEADER_FORMAT = '!HHIIIIBBH'
 HEADER_SIZE   = struct.calcsize(HEADER_FORMAT)   # 24 bytes
-
-# NetFlow v5 record (official 48-byte layout):
-#   srcaddr(4) dstaddr(4) nexthop(4)
-#   input(2)  output(2)                    <-- H H  not I I  (the original bug)
-#   dPkts(4)  dOctets(4) First(4) Last(4)
-#   srcport(2) dstport(2)
-#   pad1(1) tcp_flags(1) prot(1) tos(1)
-#   src_as(2) dst_as(2)
-#   src_mask(1) dst_mask(1) pad2(2)
 RECORD_FORMAT = '!IIIHHIIIIHHBBBBHHBBh'
 RECORD_SIZE   = struct.calcsize(RECORD_FORMAT)   # 48 bytes
 
@@ -30,14 +26,27 @@ INSERT_SQL = """
 """
 
 class NetFlowV5Protocol(asyncio.DatagramProtocol):
-    def __init__(self):
+    def __init__(self, batch_size=20, flush_interval=2.0):
         super().__init__()
-        self.batch      = []
-        self.batch_size = 1
+        self.batch          = []
+        self.batch_size     = batch_size
+        self.flush_interval = flush_interval
+        self.flush_handle   = None
+        self.total_received = 0
 
     def connection_made(self, transport):
         self.transport = transport
-        print("NetFlow v5 Collector started on UDP port 2055")
+        loop = asyncio.get_event_loop()
+        self._schedule_flush(loop)
+        print("[Collector] NetFlow v5 Engine active on UDP 2055.")
+
+    def _schedule_flush(self, loop):
+        self.flush_handle = loop.call_later(self.flush_interval, self._periodic_flush, loop)
+
+    def _periodic_flush(self, loop):
+        if self.batch:
+            self._flush()
+        self._schedule_flush(loop)
 
     def datagram_received(self, data, addr):
         try:
@@ -47,6 +56,12 @@ class NetFlowV5Protocol(asyncio.DatagramProtocol):
             version, count, sys_uptime, unix_secs, unix_nsecs, flow_seq, engine_type, engine_id, sampling = header
             if version != 5:
                 return
+
+            # Format UTC timestamp string
+            try:
+                dt_str = datetime.fromtimestamp(unix_secs, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                dt_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
             offset = HEADER_SIZE
             for _ in range(count):
@@ -59,61 +74,49 @@ class NetFlowV5Protocol(asyncio.DatagramProtocol):
                 dst_ip   = socket.inet_ntoa(struct.pack('!I', record[1]))
                 nexthop  = socket.inet_ntoa(struct.pack('!I', record[2]))
 
-                # record indices after fix (H H for input/output):
-                # [0]=srcaddr [1]=dstaddr [2]=nexthop
-                # [3]=input   [4]=output
-                # [5]=dPkts   [6]=dOctets [7]=First [8]=Last
-                # [9]=srcport [10]=dstport
-                # [11]=pad1   [12]=tcp_flags [13]=prot [14]=tos
-                # [15]=src_as [16]=dst_as [17]=src_mask [18]=dst_mask [19]=pad2
                 self.batch.append((
                     src_ip, dst_ip, nexthop,
-                    record[3], record[4],          # input_snmp, output_snmp
-                    record[5], record[6],          # packets, bytes
-                    record[7], record[8],          # first_switched, last_switched
-                    record[9], record[10],         # src_port, dst_port
-                    record[12], record[13], record[14],  # tcp_flags, protocol, tos
-                    record[15], record[16], record[17], record[18],  # AS + masks
-                    datetime.fromtimestamp(unix_secs)
+                    record[3], record[4],
+                    record[5], record[6],
+                    record[7], record[8],
+                    record[9], record[10],
+                    record[12], record[13], record[14],
+                    record[15], record[16], record[17], record[18],
+                    dt_str
                 ))
+                self.total_received += 1
 
             if len(self.batch) >= self.batch_size:
                 self._flush()
 
         except Exception as e:
-            print(f"[Collector] Error processing datagram: {e}")
+            print(f"[Collector] Datagram decode error: {e}")
 
     def _flush(self):
-      if not self.batch:
-          return
-
-      lock = get_lock()
-      conn = get_connection()
-
-      with lock:
-        try:
-            conn.executemany(INSERT_SQL, self.batch)
-            conn.commit()
-
-            print(f"[Collector] Stored {len(self.batch)} flow(s)")
-
-            self.batch.clear()
-
-        except Exception as e:
-         conn.rollback()
-         print(f"[Collector] DB flush error: {e}")
+        if not self.batch:
+            return
+        lock = get_lock()
+        conn = get_connection()
+        with lock:
+            try:
+                conn.executemany(INSERT_SQL, self.batch)
+                conn.commit()
+                self.batch.clear()
+            except Exception as e:
+                conn.rollback()
+                print(f"[Collector] Database batch flush error: {e}")
 
     def error_received(self, exc):
-        print(f"[Collector] Socket error: {exc}")
+        print(f"[Collector] Socket communication error: {exc}")
 
     def connection_lost(self, exc):
+        if self.flush_handle:
+            self.flush_handle.cancel()
         if self.batch:
-          self._flush()
-           # drain remaining on shutdown
-        print("[Collector] Connection closed, remaining batch flushed.")
+            self._flush()
+        print("[Collector] UDP Endpoint terminated cleanly.")
 
 
-# Global transport reference so main.py can close it on shutdown
 _transport = None
 
 async def start_collector(host="0.0.0.0", port=2055):
@@ -124,15 +127,13 @@ async def start_collector(host="0.0.0.0", port=2055):
         local_addr=(host, port)
     )
     _transport = transport
-    print(f"[Collector] Listening on {host}:{port}")
-    # Keep running until cancelled
     try:
-        await asyncio.Future()   # run forever
+        await asyncio.Future()
     except asyncio.CancelledError:
         pass
     finally:
         transport.close()
-        print("[Collector] Transport closed cleanly.")
+
 
 def stop_collector():
     global _transport

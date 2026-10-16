@@ -1,95 +1,254 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, ShieldAlert, Network, RefreshCw, FileText, Upload, Trash2, ShieldCheck, CheckCircle2, AlertTriangle, AlertCircle, Search, Shield, Zap, Eye, Lock } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
+import { 
+  Activity, ShieldAlert, Network, RefreshCw, FileText, Upload, Trash2, 
+  ShieldCheck, CheckCircle2, AlertTriangle, AlertCircle, Search, Shield, 
+  Zap, Eye, Lock, Server, Cpu, Database, Globe, Download, Plus, 
+  ChevronRight, ArrowUpRight, Clock, Filter, Radio, Layers, Check, X
+} from 'lucide-react';
+import { 
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, 
+  Cell, PieChart, Pie, Legend 
+} from 'recharts';
 import NetworkGraph from './NetworkGraph';
 
-
-
-const CHART_COLORS = ['#185FA5','#534AB7','#3B6D11','#854F0B','#0F6E56','#A32D2D','#3C3489','#5F5E5A'];
+const CHART_COLORS = ['#00F2FE', '#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#EF4444', '#64748B'];
 const PROTO_COLORS = { 'TCP': '#8B5CF6', 'UDP': '#3B82F6', 'ICMP': '#EC4899', 'Other': '#64748B' };
 
 function fmtBytes(n) {
-  if (!n) return '0 B';
+  if (!n || isNaN(n)) return '0 B';
+  if (n >= 1000000000) return (n / 1000000000).toFixed(2) + ' GB';
   if (n >= 1000000) return (n / 1000000).toFixed(1) + ' MB';
   if (n >= 1000) return (n / 1000).toFixed(1) + ' KB';
   return n + ' B';
 }
 
+function fmtBps(bps) {
+  if (!bps || isNaN(bps)) return '0 bps';
+  if (bps >= 1000000) return (bps / 1000000).toFixed(2) + ' Mbps';
+  if (bps >= 1000) return (bps / 1000).toFixed(1) + ' Kbps';
+  return bps.toFixed(0) + ' bps';
+}
+
 function App() {
   const [data, setData] = useState(null);
+  const [threats, setThreats] = useState(null);
+  const [audit, setAudit] = useState(null);
+  const [assetsInventory, setAssetsInventory] = useState([]);
+  const [storedReports, setStoredReports] = useState([]);
+  const [selectedReportId, setSelectedReportId] = useState('live');
+  const [storedReport, setStoredReport] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [activeGraph, setActiveGraph] = useState('asset-pubip');
   
-  // Search & Filters
+  // Navigation & Time Window
+  const [activeTab, setActiveTab] = useState('overview');
+  const [activeGraph, setActiveGraph] = useState('topology');
+  const [timeWindow, setTimeWindow] = useState('4h');
+  const [refreshInterval, setRefreshInterval] = useState(15); // seconds
+  
+  // Search & Filtering
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState('');
-  const [protoSearchQuery, setProtoSearchQuery] = useState('');
-  const [protoFilterRisk, setProtoFilterRisk] = useState('');
+  const [threatFilter, setThreatFilter] = useState('ALL');
   const [selectedNode, setSelectedNode] = useState(null);
   
-  // Capture Controls
+  // Live Capture & Upload States
   const [captureStatus, setCaptureStatus] = useState({ active: false, packets_captured: 0 });
   const [uploading, setUploading] = useState(false);
+  const [shiftToNow, setShiftToNow] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
-  
-  // Digital asset protection threats
-  const [threats, setThreats] = useState(null);
-  
-  // Custom reset confirmation modal state
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isAddAssetModalOpen, setIsAddAssetModalOpen] = useState(false);
+  
+  // New Asset Form State
+  const [newAsset, setNewAsset] = useState({
+    ip: '', hostname: '', expected_protocols: 'TCP,UDP',
+    risk_tier: 'Medium', criticality: 'Tier 2 (Business)',
+    department: 'Engineering', compliance_scope: 'PCI-DSS, NIST'
+  });
 
-  // Timer progress (synced to real 4-hour UTC boundaries)
-  const [progressWidth, setProgressWidth] = useState(0);
+  // 4-Hour Real-Time Progress Countdown
+  const [windowProgress, setWindowProgress] = useState(0);
+  const [timeRemainingStr, setTimeRemainingStr] = useState('');
   const fileInputRef = useRef(null);
 
-  const fetchData = async () => {
+  // ── Fetch Operations ───────────────────────────────────────────────────────
+  const fetchReport = useCallback(async (windowVal = timeWindow) => {
     try {
-      const response = await fetch('http://localhost:8000/api/report');
-      if (!response.ok) throw new Error('API Error');
-      const json = await response.json();
+      const res = await fetch(`http://localhost:8000/api/report?window=${windowVal}`);
+      if (!res.ok) throw new Error('API Error');
+      const json = await res.json();
       setData(json);
       setIsOffline(false);
     } catch {
-      console.warn('Backend API offline.');
-      setData(null);
       setIsOffline(true);
     }
-  };
+  }, [timeWindow]);
 
-  const fetchThreats = async () => {
+  const fetchThreatsData = useCallback(async (windowVal = timeWindow) => {
     try {
-      const response = await fetch('http://localhost:8000/api/threats');
-      if (response.ok) {
-        const json = await response.json();
+      const res = await fetch(`http://localhost:8000/api/threats?window=${windowVal}`);
+      if (res.ok) {
+        const json = await res.json();
         setThreats(json);
       }
+    } catch (e) {
+      console.warn('Threats fetch error:', e);
+    }
+  }, [timeWindow]);
+
+  const fetchAuditData = useCallback(async (windowVal = timeWindow) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/compliance/audit?window=${windowVal}`);
+      if (res.ok) {
+        const json = await res.json();
+        setAudit(json);
+      }
+    } catch (e) {
+      console.warn('Audit fetch error:', e);
+    }
+  }, [timeWindow]);
+
+  const fetchAssets = useCallback(async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/assets');
+      if (res.ok) {
+        const json = await res.json();
+        setAssetsInventory(json);
+      }
+    } catch (e) {
+      console.warn('Assets fetch error:', e);
+    }
+  }, []);
+
+  const fetchStoredReports = useCallback(async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/reports');
+      if (res.ok) {
+        const json = await res.json();
+        setStoredReports(json.reports || []);
+      }
+    } catch (e) {
+      console.warn('Reports fetch error:', e);
+    }
+  }, []);
+
+  const handleSelectReport = async (id) => {
+    setSelectedReportId(id);
+    setStoredReport(null);
+    if (id === 'live') return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/reports/${id}`);
+      if (res.ok) setStoredReport(await res.json());
     } catch {
-      // Keep local defaults
+      setActionMessage({ type: 'error', text: `Failed to load report #${id}.` });
     }
   };
 
-  const fetchCaptureStatus = async () => {
+  const handleGenerateSnapshot = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/capture/status');
-      if (response.ok) {
-        const status = await response.json();
-        setCaptureStatus(status);
+      const res = await fetch('http://localhost:8000/api/reports/generate', { method: 'POST' });
+      if (res.ok) {
+        const meta = await res.json();
+        setActionMessage({ type: 'success', text: `Stored report #${meta.id} (${meta.window_start} → ${meta.window_end} UTC).` });
+        await fetchStoredReports();
+        handleSelectReport(meta.id);
       }
     } catch {
-      // Keep local defaults
+      setActionMessage({ type: 'error', text: 'Report snapshot failed.' });
     }
   };
 
+  const handleDownloadReport = () => {
+    const payload = selectedReportId === 'live' ? data : storedReport;
+    if (!payload) return;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = selectedReportId === 'live' ? 'compliance_report_live_4h.json' : `compliance_report_${selectedReportId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const fetchCaptureStatus = useCallback(async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/capture/status');
+      if (res.ok) {
+        const status = await res.json();
+        setCaptureStatus(status);
+      }
+    } catch (e) {
+      console.warn('Capture status error:', e);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([
+      fetchReport(timeWindow),
+      fetchThreatsData(timeWindow),
+      fetchAuditData(timeWindow),
+      fetchAssets(),
+      fetchStoredReports(),
+      fetchCaptureStatus()
+    ]);
+  }, [fetchReport, fetchThreatsData, fetchAuditData, fetchAssets, fetchStoredReports, fetchCaptureStatus, timeWindow]);
+
+  // ── 4-Hour Report Cycle (schedule comes from the backend) ─────────────────
+  const WINDOW_SECONDS = data?.cycle?.cycle_seconds || 4 * 60 * 60; // 14,400s
+  const nextReportAt = data?.cycle?.next_report_at;
+
+  const updateWindowCountdown = useCallback(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const next = nextReportAt ? Math.floor(Date.parse(nextReportAt) / 1000) : now - (now % WINDOW_SECONDS) + WINDOW_SECONDS;
+    const remaining = Math.max(0, next - now);
+    const elapsed = WINDOW_SECONDS - remaining;
+    const progress = (elapsed / WINDOW_SECONDS) * 100;
+    
+    setWindowProgress(progress);
+    
+    const h = Math.floor(remaining / 3600);
+    const m = Math.floor((remaining % 3600) / 60);
+    const s = remaining % 60;
+    setTimeRemainingStr(`${h}h ${m}m ${s}s`);
+  }, [WINDOW_SECONDS, nextReportAt]);
+
+  // Interval hook
+  useEffect(() => {
+    refreshAll();
+    updateWindowCountdown();
+
+    const clockTimer = setInterval(updateWindowCountdown, 1000);
+    
+    let pollTimer = null;
+    if (refreshInterval > 0) {
+      pollTimer = setInterval(() => {
+        refreshAll();
+      }, refreshInterval * 1000);
+    }
+
+    return () => {
+      clearInterval(clockTimer);
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [refreshAll, updateWindowCountdown, refreshInterval]);
+
+  // Handle Window Switch
+  const handleWindowChange = (newWin) => {
+    setTimeWindow(newWin);
+    fetchReport(newWin);
+    fetchThreatsData(newWin);
+    fetchAuditData(newWin);
+  };
+
+  // ── Capture & DB Actions ──────────────────────────────────────────────────
   const handleStartCapture = async () => {
     try {
       const res = await fetch('http://localhost:8000/api/capture/start', { method: 'POST' });
       if (res.ok) {
-        setActionMessage({ type: 'success', text: 'Live packet capture and flow aggregation initiated.' });
+        setActionMessage({ type: 'success', text: 'Live packet capture started on default adapter.' });
         fetchCaptureStatus();
       }
     } catch {
-      setActionMessage({ type: 'error', text: 'Backend connection offline. Cannot start live capture.' });
+      setActionMessage({ type: 'error', text: 'Failed to start live sniffer.' });
     }
   };
 
@@ -98,12 +257,12 @@ function App() {
       const res = await fetch('http://localhost:8000/api/capture/stop', { method: 'POST' });
       if (res.ok) {
         const body = await res.json();
-        setActionMessage({ type: 'success', text: `Capture stopped. Saved ${body.captured || 0} flow records to DuckDB.` });
+        setActionMessage({ type: 'success', text: `Sniffer stopped. Captured ${body.captured || 0} packets.` });
         fetchCaptureStatus();
-        fetchData();
+        refreshAll();
       }
     } catch {
-      setActionMessage({ type: 'error', text: 'Backend connection offline. Cannot stop capture.' });
+      setActionMessage({ type: 'error', text: 'Failed to stop capture.' });
     }
   };
 
@@ -111,29 +270,30 @@ function App() {
     try {
       const res = await fetch('http://localhost:8000/api/clear', { method: 'POST' });
       if (res.ok) {
-        // Immediately wipe React state so UI goes blank right away
         setData(null);
-        setCaptureStatus({ active: false, packets_captured: 0 });
-        setActionMessage({ type: 'success', text: 'Database cleared and any active capture stopped.' });
-        // Then fetch the fresh (empty) state from backend to confirm
-        await fetchData();
-        await fetchCaptureStatus();
+        setThreats(null);
+        setAudit(null);
+        setSelectedNode(null);
+        setIsResetModalOpen(false);
+        setActionMessage({ type: 'success', text: 'Database cleared. All flows flushed.' });
+        refreshAll();
       }
     } catch {
-      setActionMessage({ type: 'error', text: 'Failed to reset database.' });
+      setActionMessage({ type: 'error', text: 'Database reset error.' });
     }
   };
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-    
+
     setUploading(true);
-    setActionMessage({ type: 'info', text: `Parsing PCAP data: ${file.name}...` });
-    
+    setActionMessage({ type: 'info', text: `Ingesting ${file.name}...` });
+
     const formData = new FormData();
     formData.append('file', file);
-    
+    formData.append('shift_to_now', shiftToNow.toString());
+
     try {
       const res = await fetch('http://localhost:8000/api/upload-pcap', {
         method: 'POST',
@@ -142,1347 +302,1411 @@ function App() {
       if (res.ok) {
         const body = await res.json();
         setActionMessage({ type: 'success', text: body.message });
-        fetchData();
-        fetchThreats();
+        refreshAll();
       } else {
         const body = await res.json();
-        setActionMessage({ type: 'error', text: body.detail || 'Failed to parse PCAP file.' });
+        setActionMessage({ type: 'error', text: body.detail || 'Upload failed.' });
       }
     } catch {
-      setActionMessage({ type: 'error', text: 'Connection failed during upload.' });
+      setActionMessage({ type: 'error', text: 'PCAP upload communication failed.' });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const handleForceRefresh = async () => {
+  const handleSaveAsset = async (e) => {
+    e.preventDefault();
+    if (!newAsset.ip || !newAsset.hostname) return;
     try {
-      await fetch('http://localhost:8000/api/refresh');
-      await fetchData();
-      await fetchThreats();
-      setActionMessage({ type: 'success', text: 'Re-evaluating compliance datasets...' });
+      const res = await fetch('http://localhost:8000/api/assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAsset)
+      });
+      if (res.ok) {
+        setActionMessage({ type: 'success', text: `Asset ${newAsset.ip} saved to inventory.` });
+        setIsAddAssetModalOpen(false);
+        setNewAsset({
+          ip: '', hostname: '', expected_protocols: 'TCP,UDP',
+          risk_tier: 'Medium', criticality: 'Tier 2 (Business)',
+          department: 'Engineering', compliance_scope: 'PCI-DSS, NIST'
+        });
+        fetchAssets();
+        fetchReport();
+      }
     } catch {
-      await fetchData();
+      setActionMessage({ type: 'error', text: 'Failed to save asset.' });
     }
   };
 
-  // Real 4-hour window progress calculation
-  // The window anchors to 4-hour UTC boundaries (00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
-  const WINDOW_SECONDS = 4 * 60 * 60; // 14400 seconds
-
-  const computeWindowProgress = useCallback(() => {
-    const now = Math.floor(Date.now() / 1000); // current epoch seconds
-    const elapsed = now % WINDOW_SECONDS; // seconds elapsed in current 4h window
-    return (elapsed / WINDOW_SECONDS) * 100;
-  }, [WINDOW_SECONDS]);
-
-  const computeTimeRemaining = () => {
-    const now = Math.floor(Date.now() / 1000);
-    const elapsed = now % WINDOW_SECONDS;
-    const remaining = WINDOW_SECONDS - elapsed;
-    const h = Math.floor(remaining / 3600);
-    const m = Math.floor((remaining % 3600) / 60);
-    return `${h}h ${m}m remaining`;
+  const handleDeleteAsset = async (ip) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/assets/${ip}`, { method: 'DELETE' });
+      if (res.ok) {
+        setActionMessage({ type: 'success', text: `Asset ${ip} removed from inventory.` });
+        fetchAssets();
+        fetchReport();
+      }
+    } catch {
+      setActionMessage({ type: 'error', text: 'Failed to delete asset.' });
+    }
   };
 
-  useEffect(() => {
-    fetchData();
-    fetchCaptureStatus();
-    fetchThreats();
-    setProgressWidth(computeWindowProgress());
-    
-    // Poll backend every 15 seconds for data refresh
-    const dataInterval = setInterval(() => {
-      fetchData();
-      fetchCaptureStatus();
-    }, 15000);
+  // ── Derived View Metrics ───────────────────────────────────────────────────
+  const assetsList     = data?.unique_assets || [];
+  const publicIPsList  = data?.public_ips    || [];
+  const gatewaysList   = data?.gateways      || [];
+  const natBypassList  = data?.natBypass     || [];
+  const protocolsList  = data?.protoPort     || [];
+  const absentIPsList  = data?.absentIPs     || [];
+  const threatsList    = threats?.threats    || [];
 
-    // Update the progress bar every 30 seconds (smooth enough for a 4h bar)
-    const progressInterval = setInterval(() => {
-      const progress = computeWindowProgress();
-      setProgressWidth(progress);
-      // When a new 4-hour window starts (progress resets near 0), force a data refresh
-      if (progress < 0.1) {
-        fetchData();
-      }
-    }, 30000);
+  // Compliance report source: live rolling 4h window, or a stored 4h report
+  const reportData     = selectedReportId === 'live' ? data : storedReport?.report;
+  const repAssets      = reportData?.unique_assets || [];
+  const repProtoPorts  = reportData?.protoPort     || [];
+  const repAbsent      = reportData?.absentIPs     || [];
+  const repNat         = reportData?.natBypass     || [];
+  const repProtocols   = [...new Set(repProtoPorts.map(p => p.proto))];
+  const repPorts       = [...new Set(repProtoPorts.filter(p => p.port > 0).map(p => p.port))].sort((a, b) => a - b);
+  const repPeriodLabel = selectedReportId === 'live'
+    ? `live rolling 4h window (${reportData?.window_start || '…'} → ${reportData?.window_end || '…'} UTC)`
+    : storedReport ? `stored report #${storedReport.id}, ${storedReport.window_start} → ${storedReport.window_end} UTC (${storedReport.trigger})` : 'loading…';
 
-    return () => {
-      clearInterval(dataInterval);
-      clearInterval(progressInterval);
-    };
-  }, [computeWindowProgress]);
+  const totalFlows     = data?.total_flows || 0;
+  const totalBytes     = data?.total_bytes || 0;
+  const avgBps         = data?.avg_bps || 0;
+  const avgPps         = data?.avg_pps || 0;
+  const complianceScore = data?.complianceScore ?? 100;
+  const postureScore   = threats?.summary?.posture_score ?? 100;
 
-  // Compute stats metrics dynamically
-  const assetsList = data?.unique_assets || [];
-  const publicIPsList = data?.public_ips || [];
-  const gatewaysList = data?.gateways || [];
-  const natBypassList = data?.natBypass || [];
-  const protocolsList = data?.protoPort || [];
-  const absentIPsList = data?.absentIPs || [];
-
-  const totalBytes = assetsList.reduce((acc, curr) => acc + (curr.bytes || 0), 0) + 
-                     publicIPsList.reduce((acc, curr) => acc + (curr.bytesIn || 0), 0);
-  const totalFlows = protocolsList.reduce((acc, curr) => acc + (curr.flows || 0), 0);
-  const uniqueProtocols = [...new Set(protocolsList.map(p => p.proto))].length;
-
-  // Recharts Top Talkers data formatting
-  const sortedTalkers = [...assetsList]
+  // Recharts Top Talkers
+  const topTalkersData = [...assetsList]
     .sort((a, b) => (b.bytes || 0) - (a.bytes || 0))
-    .slice(0, 8)
+    .slice(0, 7)
     .map(a => ({ ip: a.ip, bytes: a.bytes, host: a.host }));
 
-  // Recharts Protocol Distribution data formatting
+  // Protocol Frequency
   const protocolDataMap = {};
   protocolsList.forEach(p => {
     protocolDataMap[p.proto] = (protocolDataMap[p.proto] || 0) + p.flows;
   });
   const protocolChartData = Object.entries(protocolDataMap).map(([name, value]) => ({ name, value }));
 
-  // Recharts Ports Frequency horizontal bar data formatting
-  const portChartData = [...protocolsList]
-    .sort((a, b) => b.flows - a.flows)
-    .slice(0, 8)
-    .map(p => ({
-      name: p.port === 0 ? 'ICMP' : `${p.port}/${p.proto}`,
-      flows: p.flows
-    }));
-
-  // Dynamic Compliance calculations
-  const calculateAssetCompliance = (asset) => {
-    const isBypass = natBypassList.some(nb => nb.ip === asset.ip);
-    const assetProtos = protocolsList.filter(p => p.ips.includes(asset.ip));
-    const activePortsCount = assetProtos.length;
-
-    let score = 100;
-    if (isBypass) score -= 30; // Direct route bypass
-    
-    // Check if asset runs High Risk ports
-    const runsHighRisk = assetProtos.some(p => p.risk === 'High');
-    if (runsHighRisk) score -= 20;
-
-    // Check if asset runs excessive active port count
-    if (activePortsCount > 5) score -= 10;
-    if (activePortsCount === 0) score = 50; // Inactive status
-
-    return Math.max(40, score);
-  };
-
-  const assetComplianceDetails = assetsList.map(a => ({
-    ...a,
-    score: calculateAssetCompliance(a),
-    viaGateway: !natBypassList.some(nb => nb.ip === a.ip),
-    protosUsed: [...new Set(protocolsList.filter(p => p.ips.includes(a.ip)).map(p => p.proto))]
-  }));
-
-  const compliantCount = assetComplianceDetails.filter(a => a.score >= 80).length;
-  const partialCount = assetComplianceDetails.filter(a => a.score > 50 && a.score < 80).length;
-  const nonCompliantCount = assetComplianceDetails.filter(a => a.score <= 50).length;
-  const overallScore = assetComplianceDetails.length > 0
-    ? Math.round(assetComplianceDetails.reduce((acc, curr) => acc + curr.score, 0) / assetComplianceDetails.length)
-    : null;
-
-  const handleExportCSV = () => {
-    let csvContent = "";
-
-    // 1. Report Title & Meta
-    csvContent += "=== HTC NETWORK COMPLIANCE DASHBOARD REPORT ===\n";
-    csvContent += `Generated: ${new Date().toISOString()}\n`;
-    csvContent += `Rolling Time Window: ${data?.window_hours || 4} Hours\n\n`;
-
-    // 2. Section: Internal Asset Compliance Audit
-    csvContent += "SECTION 1: INTERNAL ASSET COMPLIANCE AUDIT\n";
-    const assetHeaders = ['IP Address', 'Hostname', 'Type', 'Compliance Score', 'Gateway Routing Status', 'Protocols Observed', 'Traffic Volume (Bytes)', 'Flow Count'];
-    const assetRows = assetComplianceDetails.map(a => [
-      a.ip,
-      a.host,
-      a.type,
-      `${a.score}%`,
-      a.viaGateway ? 'COMPLIANT (Via Gateway)' : 'NON-COMPLIANT (NAT Bypass)',
-      a.protosUsed.join('|') || 'None',
-      a.bytes || 0,
-      a.flows || 0
-    ]);
-    csvContent += [assetHeaders, ...assetRows].map(e => e.join(",")).join("\n") + "\n\n";
-
-    // 3. Section: Configured Gateway Routing
-    csvContent += "SECTION 2: CONFIGURED GATEWAY ROUTING\n";
-    const gwHeaders = ['Gateway IP', 'Hostname', 'Gateway Type', 'Status'];
-    const gwRows = gatewaysList.map(g => [
-      g.ip,
-      g.host,
-      g.type,
-      'Active & Monitoring'
-    ]);
-    csvContent += [gwHeaders, ...gwRows].map(e => e.join(",")).join("\n") + "\n\n";
-
-    // 4. Section: NAT Bypass Alarms
-    csvContent += "SECTION 3: NAT BYPASS ALARMS (ROUTING INTEGRITY VIOLATIONS)\n";
-    const bypassHeaders = ['Asset IP', 'Hostname', 'Observed NextHop', 'Example Destination IP', 'Risk Classification'];
-    const bypassRows = natBypassList.map(b => [
-      b.ip,
-      b.host,
-      b.nexthop,
-      b.example_dst,
-      b.risk
-    ]);
-    if (bypassRows.length === 0) {
-      csvContent += "No routing integrity violations detected. All internal hosts comply with gateway routing.\n\n";
-    } else {
-      csvContent += [bypassHeaders, ...bypassRows].map(e => e.join(",")).join("\n") + "\n\n";
+  // Filtered threats
+  const filteredThreats = threatsList.filter(t => {
+    if (threatFilter !== 'ALL' && t.severity !== threatFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        t.asset_ip?.toLowerCase().includes(q) ||
+        t.target_ip?.toLowerCase().includes(q) ||
+        t.mitre_name?.toLowerCase().includes(q) ||
+        t.details?.toLowerCase().includes(q)
+      );
     }
-
-    // 5. Section: External Public Peers
-    csvContent += "SECTION 4: EXTERNAL PUBLIC PEERS AUDIT\n";
-    const peerHeaders = ['Public IP', 'Geo-Location', 'Target Asset IPs', 'Protocols Used', 'Bytes Received', 'Threat Level'];
-    const peerRows = publicIPsList.map(p => [
-      p.ip,
-      p.geo.replace(/,/g, " -"), // Clean commas to avoid breaking columns
-      (p.talksto || []).join('|'),
-      (p.proto || []).join('|'),
-      p.bytesIn || 0,
-      `${p.threat}/100`
-    ]);
-    csvContent += [peerHeaders, ...peerRows].map(e => e.join(",")).join("\n") + "\n\n";
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `htc_netflow_compliance_report_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+    return true;
+  });
 
   return (
-    <div className="min-h-screen bg-[#080B10] text-[#E2E8F0] px-4 py-6 md:p-8 flex flex-col font-sans select-none">
+    <div className="min-h-screen bg-[#070B13] text-slate-100 font-sans flex flex-col antialiased selection:bg-cyan-500 selection:text-black">
       
-      {/* Dynamic Offline / Connection Status Banner */}
-      {isOffline && (
-        <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs md:text-sm text-amber-400 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0 animate-pulse" />
-          <span><strong>Backend Offline:</strong> Python backend (http://localhost:8000) is currently unreachable. Start backend with `python main.py` to upload PCAPs or start live capture.</span>
-        </div>
-      )}
-
-      {/* Global Actions Notification Toast */}
-      {actionMessage && (
-        <div className={`mb-4 border rounded-lg p-3 text-xs md:text-sm flex items-center justify-between gap-2 transition-all ${
-          actionMessage.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
-          actionMessage.type === 'error' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' :
-          'bg-[#121722] border-slate-700 text-slate-300'
-        }`}>
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4" />
-            <span>{actionMessage.text}</span>
-          </div>
-          <button onClick={() => setActionMessage(null)} className="hover:text-white font-mono text-xs">✕</button>
-        </div>
-      )}
-
-      {/* Dashboard Top Telemetry & Control Panel */}
-      <header className="mb-6 flex flex-col lg:flex-row justify-between lg:items-center gap-4 border-b border-[#1e293b] pb-6">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-[#00F2FE] animate-pulse"></span>
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-white font-sans">NetFlow Analytics Dashboard</h1>
-          </div>
-          <p className="text-xs text-[#94A3B8] font-mono mt-1">HTC Internship — Network Intelligence Platform</p>
-        </div>
-
-        {/* Real-time Tool bar */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* File Upload Input */}
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileUpload} 
-            accept=".pcap,.pcapng" 
-            className="hidden" 
-          />
-          <button 
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 bg-[#121722] hover:bg-[#1c2436] text-xs font-mono text-slate-200 border border-slate-700 px-3.5 py-2 rounded-md cursor-pointer transition-colors disabled:opacity-50"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>{uploading ? 'Parsing...' : 'Upload PCAP'}</span>
-          </button>
-
-          {/* Live Sniffer Toggle */}
-          <button
-            onClick={captureStatus.active ? handleStopCapture : handleStartCapture}
-            className={`flex items-center gap-2 text-xs font-mono border px-3.5 py-2 rounded-md cursor-pointer transition-all ${
-              captureStatus.active 
-              ? 'bg-rose-500/20 text-rose-400 border-rose-500/40 hover:bg-rose-500/30' 
-              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
-            }`}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${captureStatus.active ? 'bg-rose-500 animate-ping' : 'bg-emerald-400'}`}></span>
-            <span>{captureStatus.active ? `Capturing (${captureStatus.packets_captured})` : 'Start Live Capture'}</span>
-          </button>
-
-          {/* Clear DB */}
-          <button
-            onClick={() => setIsResetModalOpen(true)}
-            className="flex items-center gap-2 bg-[#121722] hover:bg-rose-950/20 hover:text-rose-400 hover:border-rose-500/30 text-xs font-mono text-slate-400 border border-slate-700 px-3.5 py-2 rounded-md cursor-pointer transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </header>
-
-      {/* Progress timeline bar — synced to real 4-hour UTC boundaries */}
-      <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-3.5 flex flex-col md:flex-row md:items-center gap-4 mb-6">
-        <div className="flex items-center gap-2 justify-between md:justify-start">
-          <span className="text-[11px] font-mono text-[#94A3B8] uppercase tracking-wider">4h window progress</span>
-          <span className="bg-[#185FA5]/20 text-[#00F2FE] border border-[#185FA5]/30 text-[10px] font-mono font-medium px-2 py-0.5 rounded">
-            ⏱ Window: 4h
-          </span>
-        </div>
-        <div className="flex-grow h-2 bg-[#080B10] rounded-full overflow-hidden border border-[#1e293b]">
-          <div className="h-full bg-gradient-to-r from-[#185FA5] to-[#00F2FE] rounded-full transition-all duration-[30s]" style={{ width: `${progressWidth}%` }}></div>
-        </div>
-        <div className="flex items-center justify-between md:justify-end gap-4">
-          <span className="text-xs font-mono text-[#94A3B8] min-w-[140px] text-right">
-            {Math.round(progressWidth)}% — {computeTimeRemaining()}
-          </span>
-          <button 
-            onClick={handleForceRefresh} 
-            className="flex items-center gap-1.5 bg-[#1a2336] hover:bg-[#25324d] text-white text-xs font-mono border border-[#2a3c5a] px-3.5 py-1.5 rounded transition-colors"
-          >
-            <RefreshCw className="w-3 h-3 animate-spin-slow" /> Re-Evaluate
-          </button>
-        </div>
-      </div>
-
-      {/* Dynamic Data Warning / Action Required Banner */}
-      {assetsList.length === 0 && (
-        <div className="mb-6 bg-gradient-to-r from-blue-900/10 to-indigo-900/10 border border-blue-500/20 rounded-lg p-5 text-center shadow-lg">
-          <div className="flex flex-col items-center gap-3">
-            <div className="h-9 w-9 rounded-full bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
-              <Activity className="w-4 h-4 text-[#00F2FE] animate-pulse" />
-            </div>
-            <h2 className="text-sm font-bold text-white font-mono">No NetFlow Traffic Data Available</h2>
-            <p className="text-xs text-[#94A3B8] font-mono max-w-lg mx-auto leading-relaxed">
-              The database is currently empty. To analyze network assets, gateways, protocols, NAT bypasses, and compliance metrics, please upload a NetFlow PCAP file or start a live capture simulation.
-            </p>
-            <div className="flex gap-3 mt-1.5">
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                className="bg-[#00F2FE]/10 hover:bg-[#00F2FE]/20 text-[#00F2FE] border border-[#00F2FE]/30 text-xs font-mono px-4 py-2 rounded transition-all cursor-pointer"
-              >
-                Upload PCAP
-              </button>
-              <button 
-                onClick={captureStatus.active ? handleStopCapture : handleStartCapture}
-                className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-mono px-4 py-2 rounded transition-all cursor-pointer"
-              >
-                {captureStatus.active ? 'Stop Capture' : 'Start Live Capture'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Segment Navigation Tabs */}
-      <div className="flex border-b border-[#1e293b] mb-6 overflow-x-auto gap-1">
-        {[
-          { id: 'overview', label: 'Overview', icon: <Activity className="w-3.5 h-3.5" /> },
-          { id: 'assets', label: 'Assets & IPs', icon: <ShieldAlert className="w-3.5 h-3.5" /> },
-          { id: 'protocols', label: 'Protocols & Ports', icon: <Network className="w-3.5 h-3.5" /> },
-          { id: 'graphs', label: 'Relationship Graphs', icon: <Network className="w-3.5 h-3.5" /> },
-          { id: 'protection', label: 'Asset Protection', icon: <Shield className="w-3.5 h-3.5" />, alert: threats?.summary?.critical_count > 0 },
-          { id: 'compliance', label: 'Compliance Report', icon: <FileText className="w-3.5 h-3.5" /> },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 py-2.5 px-4 text-xs font-mono border-b-2 font-medium cursor-pointer transition-all ${
-              activeTab === tab.id 
-              ? 'border-[#00F2FE] text-white bg-[#111622]/30' 
-              : 'border-transparent text-[#94A3B8] hover:text-white hover:bg-[#111622]/10'
-            }`}
-          >
-            {tab.icon}
-            {tab.label}
-            {tab.alert && (
-              <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* TAB CONTENT AREAS */}
-      {activeTab === 'overview' && (
-        <div className="flex flex-col gap-6 animate-fade-in">
+      {/* ── TOP INDUSTRIAL HEADER ─────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 bg-[#0B101D]/90 backdrop-blur-md border-b border-slate-800/80 px-6 py-3">
+        <div className="max-w-[1720px] mx-auto flex flex-wrap items-center justify-between gap-4">
           
-          {/* Main metrics grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3.5">
-            {[
-              { label: 'Internal Assets', val: assetsList.length, color: 'text-[#3B82F6]' },
-              { label: 'Public IPs', val: publicIPsList.length, color: 'text-[#8B5CF6]' },
-              { label: 'Gateways', val: gatewaysList.length, color: 'text-[#E5A93C]' },
-              { label: 'NAT Bypass IPs', val: natBypassList.length, color: natBypassList.length > 0 ? 'text-[#FF3366]' : 'text-emerald-400' },
-              { label: 'Protocols', val: uniqueProtocols, color: 'text-[#3B82F6]' },
-              { label: 'Unique Ports', val: protocolsList.length, color: 'text-[#8B5CF6]' },
-              { label: 'Total Flows', val: totalFlows.toLocaleString(), color: 'text-[#3B6D11]' },
-              { label: 'Total Bytes', val: fmtBytes(totalBytes), color: 'text-slate-100' },
-            ].map((metric, i) => (
-              <div key={i} className="bg-[#111622] border border-[#1e293b] rounded-lg p-3 flex flex-col justify-between">
-                <span className="text-[10px] text-[#94A3B8] font-mono uppercase tracking-wider block mb-1">{metric.label}</span>
-                <span className={`text-lg md:text-xl font-bold font-mono tracking-tight ${metric.color}`}>{metric.val}</span>
+          {/* Logo & Brand */}
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 p-0.5 shadow-lg shadow-cyan-500/20">
+              <div className="w-full h-full bg-[#0B101D] rounded-[7px] flex items-center justify-center">
+                <Network className="w-5 h-5 text-cyan-400" />
               </div>
-            ))}
-          </div>
-
-          {/* Gateway & NAT analyses columns */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Gateway analysis card */}
-            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5">
-              <h3 className="text-sm font-semibold tracking-tight text-white mb-4 uppercase tracking-wider font-mono">Gateway Analysis</h3>
-              <div className="space-y-3.5">
-                {gatewaysList.length === 0 ? (
-                  <div className="text-slate-500 font-mono text-xs py-2 text-center">
-                    No active gateways identified in traffic yet.
-                  </div>
-                ) : (
-                  gatewaysList.map((gw, idx) => (
-                    <div key={idx} className="flex items-center justify-between border-b border-[#1e293b] pb-2">
-                      <div className="flex items-center gap-3">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-                        <span className="text-xs font-mono font-medium text-white">{gw.ip}</span>
-                        <span className="text-xs text-[#94A3B8] font-mono">({gw.host})</span>
-                      </div>
-                      <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono px-2 py-0.5 rounded">Active Gateway</span>
-                    </div>
-                  ))
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-white tracking-wide">HTC NetFlow Pro</h1>
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">Enterprise NDR</span>
+                {isOffline && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" /> Offline
+                  </span>
                 )}
               </div>
-              <p className="text-[11px] text-[#94A3B8] font-mono mt-4">Configured NAT gateway identified from traffic routing mapping, flow symmetries, and internal outbound connections.</p>
-            </div>
-
-            {/* NAT bypass card */}
-            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5">
-              <h3 className="text-sm font-semibold tracking-tight text-white mb-4 uppercase tracking-wider font-mono">NAT Bypass Alerts</h3>
-              <div className="space-y-3">
-                {assetsList.length === 0 ? (
-                  <div className="text-slate-500 font-mono text-xs py-2 text-center">
-                    Awaiting traffic data.
-                  </div>
-                ) : natBypassList.length === 0 ? (
-                  <div className="text-emerald-400 font-mono text-xs flex items-center gap-2 py-2">
-                    <CheckCircle2 className="w-4 h-4" /> No gateway bypass flows detected.
-                  </div>
-                ) : (
-                  natBypassList.map((bypass, idx) => (
-                    <div key={idx} className="flex items-center justify-between border-b border-[#1e293b] pb-2">
-                      <div className="flex items-center gap-3">
-                        <span className="h-2 w-2 rounded-full bg-[#FF3366] animate-pulse"></span>
-                        <span className="text-xs font-mono font-medium text-white">{bypass.ip}</span>
-                        <span className="text-xs text-[#94A3B8] font-mono">({bypass.host})</span>
-                      </div>
-                      <span className="bg-rose-500/10 text-[#FF3366] border border-rose-500/30 text-[10px] font-mono px-2 py-0.5 rounded uppercase tracking-wider">NAT Bypass</span>
-                    </div>
-                  ))
-                )}
-              </div>
-              <p className="text-[11px] text-[#94A3B8] font-mono mt-4">Outbound packets observed bypassing the primary gateway. Indicates potential direct internet routing or split-tunnel configuration anomalies.</p>
+              <p className="text-xs text-slate-400 font-mono">Real-Time Traffic Analysis & Regulatory Compliance Platform</p>
             </div>
           </div>
 
-          {/* Top Talkers Bytes chart */}
-          <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5">
-            <h3 className="text-sm font-semibold tracking-tight text-white mb-4 uppercase tracking-wider font-mono">Top talkers (bytes)</h3>
-            {sortedTalkers.length === 0 ? (
-              <div className="h-[240px] w-full flex flex-col justify-center items-center border border-dashed border-slate-800 rounded bg-[#0a0d14]">
-                <span className="text-slate-600 font-mono text-xs">No talker traffic data available</span>
-              </div>
-            ) : (
-              <>
-                <div className="h-[240px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={sortedTalkers}>
-                      <XAxis dataKey="ip" stroke="#64748B" fontSize={10} fontClassName="font-mono" />
-                      <YAxis stroke="#64748B" fontSize={10} fontClassName="font-mono" tickFormatter={fmtBytes} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#111622', borderColor: '#1e293b' }} 
-                        labelClassName="text-slate-400 font-mono text-xs" 
-                        formatter={(val) => [fmtBytes(val), 'Traffic']}
-                      />
-                      <Bar dataKey="bytes" fill="#185FA5">
-                        {sortedTalkers.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1.5 font-mono text-[10px] text-[#94A3B8] mt-4 border-t border-[#1e293b] pt-3">
-                  {sortedTalkers.map((t, idx) => (
-                    <div key={idx} className="flex items-center gap-1">
-                      <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] }}></span>
-                      <span>{t.ip} ({t.host})</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'assets' && (
-        <div className="flex flex-col gap-6 animate-fade-in">
-          {/* Filters Bar */}
-          <div className="flex flex-col md:flex-row gap-3">
-            <div className="relative flex-grow">
-              <Search className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
-              <input 
-                type="text" 
-                placeholder="Search IP or hostname..." 
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full bg-[#111622] border border-[#1e293b] rounded-md py-2 pl-9 pr-4 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-[#00F2FE]"
-              />
-            </div>
-            <select
-              value={filterType}
-              onChange={e => setFilterType(e.target.value)}
-              className="bg-[#111622] border border-[#1e293b] rounded-md py-2 px-3 text-xs font-mono text-slate-300 focus:outline-none focus:border-[#00F2FE]"
-            >
-              <option value="">All Types</option>
-              <option value="Internal">Internal</option>
-              <option value="Gateway">Gateway</option>
-            </select>
-          </div>
-
-          {/* Internal Assets Table */}
-          <div className="bg-[#111622] border border-[#1e293b] rounded-lg overflow-hidden">
-            <div className="p-4 border-b border-[#1e293b] flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-white tracking-wider uppercase font-mono">Discovered Assets & Gateways</h3>
-              <span className="bg-[#1e293b] text-slate-300 px-2 py-0.5 rounded text-[10px] font-mono">
-                {assetsList.length + gatewaysList.length} Found
-              </span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs">
-                <thead>
-                  <tr className="bg-[#0c101a] border-b border-[#1e293b] text-[#94A3B8] font-medium uppercase text-[10px] tracking-wider">
-                    <th className="p-3">IP Address</th>
-                    <th className="p-3">Hostname</th>
-                    <th className="p-3">Type</th>
-                    <th className="p-3">Active Protocols</th>
-                    <th className="p-3 text-right">Traffic</th>
-                    <th className="p-3 text-right">Flows</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1e293b]/40">
-                  {gatewaysList.length === 0 && assetsList.length === 0 ? (
-                    <tr>
-                      <td colSpan="6" className="p-8 text-center text-slate-500 font-mono">
-                        No assets or gateways discovered yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    <>
-                      {/* Map Gateways first */}
-                      {gatewaysList
-                        .filter(g => g.ip.includes(searchQuery) || g.host.toLowerCase().includes(searchQuery.toLowerCase()))
-                        .filter(() => !filterType || filterType === 'Gateway')
-                        .map((gw, idx) => (
-                          <tr key={`gw-${idx}`} className="hover:bg-[#1c2436]/20 transition-colors">
-                            <td className="p-3 text-white font-bold">{gw.ip}</td>
-                            <td className="p-3 text-slate-400">{gw.host}</td>
-                            <td className="p-3">
-                              <span className="bg-[#EAF3DE]/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-semibold px-2 py-0.5 rounded uppercase">Gateway</span>
-                            </td>
-                            <td className="p-3 text-[#94A3B8]">SNMP | UDP</td>
-                            <td className="p-3 text-right text-[#94A3B8]">0 B</td>
-                            <td className="p-3 text-right text-[#94A3B8]">0</td>
-                          </tr>
-                        ))
-                      }
-                      {/* Map Assets */}
-                      {assetsList
-                        .filter(a => a.ip.includes(searchQuery) || a.host.toLowerCase().includes(searchQuery.toLowerCase()))
-                        .filter(() => !filterType || filterType === 'Internal')
-                        .map((asset, idx) => {
-                          const protosUsed = [...new Set(protocolsList.filter(p => p.ips.includes(asset.ip)).map(p => p.proto))];
-                          return (
-                            <tr key={`asset-${idx}`} className="hover:bg-[#1c2436]/20 transition-colors">
-                              <td className="p-3 text-white font-semibold">{asset.ip}</td>
-                              <td className="p-3 text-slate-400">{asset.host}</td>
-                              <td className="p-3">
-                                <span className="bg-[#E6F1FB]/10 text-[#00F2FE] border border-[#185FA5]/30 text-[9px] font-semibold px-2 py-0.5 rounded uppercase">Internal</span>
-                              </td>
-                              <td className="p-3">
-                                <div className="flex gap-1 flex-wrap">
-                                  {protosUsed.map((pr, pidx) => (
-                                    <span key={pidx} className="bg-[#1e293b] text-slate-300 text-[9px] px-1.5 py-0.2 rounded">{pr}</span>
-                                  ))}
-                                </div>
-                              </td>
-                              <td className="p-3 text-right text-slate-200">{fmtBytes(asset.bytes)}</td>
-                              <td className="p-3 text-right text-slate-300">{asset.flows}</td>
-                            </tr>
-                          );
-                        })
-                      }
-                    </>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Public IPs Geolocation & Risk Analysis */}
-          <div className="bg-[#111622] border border-[#1e293b] rounded-lg overflow-hidden">
-            <div className="p-4 border-b border-[#1e293b]">
-              <h3 className="text-xs font-semibold text-white tracking-wider uppercase font-mono">Public IPs Communicating with Network</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs">
-                <thead>
-                  <tr className="bg-[#0c101a] border-b border-[#1e293b] text-[#94A3B8] font-medium uppercase text-[10px] tracking-wider">
-                    <th className="p-3">Public IP</th>
-                    <th className="p-3">Geolocation</th>
-                    <th className="p-3">Target Assets</th>
-                    <th className="p-3">Protocols</th>
-                    <th className="p-3 text-right">Traffic (Bytes In)</th>
-                    <th className="p-3 text-right">Threat Score</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1e293b]/40">
-                  {publicIPsList.length === 0 ? (
-                    <tr>
-                      <td colSpan="6" className="p-8 text-center text-slate-500 font-mono">
-                        No public IPs communicating with the network yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    publicIPsList.map((peer, idx) => {
-                      const badgeColor = peer.threat > 50 ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                                         peer.threat > 20 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                                         'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-                      return (
-                        <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
-                          <td className="p-3 text-white font-semibold">{peer.ip}</td>
-                          <td className="p-3 text-slate-400">{peer.geo}</td>
-                          <td className="p-3 text-slate-300 text-[11px]">{(peer.talksto || []).join(', ')}</td>
-                          <td className="p-3">
-                            <div className="flex gap-1 flex-wrap">
-                              {peer.proto.map((pr, pidx) => (
-                                <span key={pidx} className="bg-[#185FA5]/10 text-[#00F2FE] text-[9px] px-1.5 py-0.2 rounded border border-[#185FA5]/30">{pr}</span>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="p-3 text-right text-slate-200">{fmtBytes(peer.bytesIn)}</td>
-                          <td className="p-3 text-right">
-                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded font-mono ${badgeColor}`}>{peer.threat}/100</span>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'protocols' && (
-        <div className="flex flex-col gap-6 animate-fade-in">
-          
-          {/* Recharts Pie and Ports usage charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* 4-Hour Time Window Controller & Ingest Status */}
+          <div className="flex flex-wrap items-center gap-3">
             
-            {/* Protocol distribution pie chart */}
-            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5">
-              <h3 className="text-sm font-semibold tracking-tight text-white mb-4 uppercase tracking-wider font-mono">Protocol Distribution</h3>
-              {protocolChartData.length === 0 ? (
-                <div className="h-[200px] w-full flex items-center justify-center border border-dashed border-slate-800 rounded bg-[#0a0d14]">
-                  <span className="text-slate-600 font-mono text-xs">No protocol data available</span>
-                </div>
-              ) : (
-                <>
-                  <div className="h-[200px] w-full flex items-center justify-center">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={protocolChartData}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={50}
-                          outerRadius={75}
-                          paddingAngle={4}
-                          dataKey="value"
-                        >
-                          {protocolChartData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={PROTO_COLORS[entry.name] || PROTO_COLORS['Other']} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ backgroundColor: '#111622', borderColor: '#1e293b', labelClassName: 'font-mono' }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1.5 justify-center font-mono text-[10px] text-[#94A3B8] mt-2">
-                    {protocolChartData.map((p, idx) => (
-                      <div key={idx} className="flex items-center gap-1.5">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PROTO_COLORS[p.name] || PROTO_COLORS['Other'] }}></span>
-                        <span>{p.name}: {p.value.toLocaleString()} flows</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Port frequency horizontal bar chart */}
-            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5">
-              <h3 className="text-sm font-semibold tracking-tight text-white mb-4 uppercase tracking-wider font-mono">Port Usage Frequency</h3>
-              {portChartData.length === 0 ? (
-                <div className="h-[200px] w-full flex items-center justify-center border border-dashed border-slate-800 rounded bg-[#0a0d14]">
-                  <span className="text-slate-600 font-mono text-xs">No port data available</span>
-                </div>
-              ) : (
-                <div className="h-[200px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={portChartData} layout="vertical">
-                      <XAxis type="number" stroke="#64748B" fontSize={10} fontClassName="font-mono" />
-                      <YAxis dataKey="name" type="category" stroke="#64748B" fontSize={10} fontClassName="font-mono" width={60} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111622', borderColor: '#1e293b' }} />
-                      <Bar dataKey="flows" fill="#185FA5" radius={[0, 4, 4, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Filters Bar */}
-          <div className="flex flex-col md:flex-row gap-3">
-            <div className="relative flex-grow">
-              <Search className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
-              <input 
-                type="text" 
-                placeholder="Search protocol, port, or service name..." 
-                value={protoSearchQuery}
-                onChange={e => setProtoSearchQuery(e.target.value)}
-                className="w-full bg-[#111622] border border-[#1e293b] rounded-md py-2 pl-9 pr-4 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-[#00F2FE]"
-              />
-            </div>
-            <select
-              value={protoFilterRisk}
-              onChange={e => setProtoFilterRisk(e.target.value)}
-              className="bg-[#111622] border border-[#1e293b] rounded-md py-2 px-3 text-xs font-mono text-slate-300 focus:outline-none focus:border-[#00F2FE]"
-            >
-              <option value="">All Risk Levels</option>
-              <option value="Low">Low Risk</option>
-              <option value="Medium">Medium Risk</option>
-              <option value="High">High Risk</option>
-              <option value="Critical">Critical Risk</option>
-            </select>
-          </div>
-
-          {/* Protocols and Ports details grid */}
-          <div className="bg-[#111622] border border-[#1e293b] rounded-lg overflow-hidden">
-            <div className="p-4 border-b border-[#1e293b]">
-              <h3 className="text-xs font-semibold text-white tracking-wider uppercase font-mono">Protocol & Port Service Audit</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs">
-                <thead>
-                  <tr className="bg-[#0c101a] border-b border-[#1e293b] text-[#94A3B8] font-medium uppercase text-[10px] tracking-wider">
-                    <th className="p-3">Protocol</th>
-                    <th className="p-3">Port</th>
-                    <th className="p-3">Service Name</th>
-                    <th className="p-3 text-right">Flows Count</th>
-                    <th className="p-3 text-right">Bytes Count</th>
-                    <th className="p-3 text-right">Endpoint Bindings</th>
-                    <th className="p-3 text-right">Risk Assessment</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1e293b]/40">
-                  {protocolsList.length === 0 ? (
-                    <tr>
-                      <td colSpan="7" className="p-8 text-center text-slate-500 font-mono">
-                        No active protocols or ports audited yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    protocolsList
-                      .filter(service => {
-                        const query = protoSearchQuery.toLowerCase();
-                        const matchQuery = service.proto.toLowerCase().includes(query) || 
-                                           String(service.port).includes(query) || 
-                                           service.service.toLowerCase().includes(query);
-                        const matchRisk = !protoFilterRisk || service.risk === protoFilterRisk;
-                        return matchQuery && matchRisk;
-                      })
-                      .map((service, idx) => {
-                        const riskBadge = service.risk === 'High' || service.risk === 'Critical' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                                          service.risk === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                                          'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-                        return (
-                          <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
-                            <td className="p-3">
-                              <span className="bg-[#1e293b] text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded">{service.proto}</span>
-                            </td>
-                            <td className="p-3 text-white">{service.port || '—'}</td>
-                            <td className="p-3 text-slate-400">{service.service}</td>
-                            <td className="p-3 text-right text-slate-300">{service.flows.toLocaleString()}</td>
-                            <td className="p-3 text-right text-slate-200">{fmtBytes(service.bytes)}</td>
-                            <td className="p-3 text-right text-slate-400">{service.ips.length} assets</td>
-                            <td className="p-3 text-right">
-                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${riskBadge}`}>{service.risk}</span>
-                            </td>
-                          </tr>
-                        );
-                      })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'graphs' && (
-        <div className="flex flex-col lg:flex-row gap-6 animate-fade-in">
-          
-          {/* Left Column: Visual Graph */}
-          <div className="flex-grow flex flex-col gap-4">
-            {/* Sub Navigation controls */}
-            <div className="flex gap-2">
-              {[
-                { id: 'asset-pubip', label: 'Asset ↔ Public IPs' },
-                { id: 'asset-proto', label: 'Asset ↔ Protocols' },
-                { id: 'gateway-flow', label: 'Gateway Flow Topology' },
-              ].map(nav => (
+            {/* Window Selector */}
+            <div className="flex items-center bg-[#070B13] p-1 rounded-lg border border-slate-800">
+              <Clock className="w-3.5 h-3.5 text-slate-400 ml-2 mr-1" />
+              {['15m', '1h', '4h', '12h', '24h', '7d', 'all'].map((w) => (
                 <button
-                  key={nav.id}
-                  onClick={() => {
-                    setActiveGraph(nav.id);
-                    setSelectedNode(null); // Reset detail selector on tab change
-                  }}
-                  className={`py-1.5 px-3.5 text-xs font-mono border rounded transition-all cursor-pointer ${
-                    activeGraph === nav.id 
-                    ? 'bg-[#185FA5]/20 text-[#00F2FE] border-[#185FA5]/40 font-medium' 
-                    : 'bg-[#111622] text-[#94A3B8] border-slate-800 hover:text-white'
+                  key={w}
+                  onClick={() => handleWindowChange(w)}
+                  className={`text-xs font-mono px-2.5 py-1 rounded transition-all ${
+                    timeWindow === w
+                      ? 'bg-cyan-500 text-black font-semibold shadow'
+                      : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  {nav.label}
+                  {w === '4h' ? '4h (Live)' : w.toUpperCase()}
                 </button>
               ))}
             </div>
 
-            {/* SVG Graph Component container */}
-            <div className="h-[450px]">
-              <NetworkGraph 
-                type={activeGraph} 
-                data={data} 
-                onSelectNode={setSelectedNode} 
-                selectedNode={selectedNode}
+            {/* Live Real-Time 4h Progress Bar Pill */}
+            {timeWindow === '4h' && (
+              <div className="hidden lg:flex flex-col bg-[#070B13] border border-slate-800 rounded-lg px-3 py-1.5 min-w-[200px]">
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-1">
+                  <span className="flex items-center gap-1.5 text-cyan-400">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" /> Next 4h report
+                  </span>
+                  <span>{timeRemainingStr}</span>
+                </div>
+                <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-1000"
+                    style={{ width: `${Math.min(windowProgress, 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Adaptive Badge if viewing PCAP dataset */}
+            {data?.is_adaptive && (
+              <span className="text-[10px] font-mono px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                <Zap className="w-3 h-3 text-amber-400" /> PCAP-Adaptive Window
+              </span>
+            )}
+
+            {/* Ingest Daemon Status Badges */}
+            <div className="flex items-center gap-2 bg-[#070B13] border border-slate-800 rounded-lg px-3 py-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-slate-400">UDP:2055:</span>
+                <span className="text-emerald-400 font-semibold">Active</span>
+              </div>
+              <span className="text-slate-700">|</span>
+              <div className="flex items-center gap-1.5 text-xs font-mono">
+                <span className={`w-2 h-2 rounded-full ${captureStatus.active ? 'bg-cyan-400 animate-ping' : 'bg-slate-600'}`} />
+                <span className="text-slate-400">Sniffer:</span>
+                <span className={captureStatus.active ? 'text-cyan-400 font-semibold' : 'text-slate-400'}>
+                  {captureStatus.active ? `${captureStatus.packets_captured} pkts` : 'Idle'}
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
+            <div className="flex items-center gap-1.5">
+              {captureStatus.active ? (
+                <button
+                  onClick={handleStopCapture}
+                  className="text-xs font-mono px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 border border-red-500/40 hover:bg-red-500/30 flex items-center gap-1.5 transition"
+                >
+                  <X className="w-3.5 h-3.5" /> Stop Sniffer
+                </button>
+              ) : (
+                <button
+                  onClick={handleStartCapture}
+                  className="text-xs font-mono px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 flex items-center gap-1.5 transition"
+                >
+                  <Radio className="w-3.5 h-3.5" /> Live Sniff
+                </button>
+              )}
+
+              <input 
+                ref={fileInputRef} 
+                type="file" 
+                accept=".pcap,.pcapng,.cap" 
+                className="hidden" 
+                onChange={handleFileUpload} 
               />
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="text-xs font-mono px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition"
+              >
+                <Upload className="w-3.5 h-3.5 text-cyan-400" /> {uploading ? 'Parsing...' : 'Upload PCAP'}
+              </button>
+
+              <button
+                onClick={refreshAll}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+                title="Force Refresh"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+
+              <button
+                onClick={() => setIsResetModalOpen(true)}
+                className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition"
+                title="Clear Flow Records"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Action Toast / Notification */}
+        {actionMessage && (
+          <div className="max-w-[1720px] mx-auto mt-2">
+            <div className={`px-3 py-1.5 rounded-lg text-xs font-mono flex items-center justify-between ${
+              actionMessage.type === 'success' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' :
+              actionMessage.type === 'error' ? 'bg-red-500/10 text-red-300 border border-red-500/30' :
+              'bg-blue-500/10 text-blue-300 border border-blue-500/30'
+            }`}>
+              <span>{actionMessage.text}</span>
+              <button onClick={() => setActionMessage(null)} className="text-slate-400 hover:text-white">✕</button>
             </div>
           </div>
+        )}
 
-          {/* Right Column: Node Telemetry Inspector Panel */}
-          <div className="w-full lg:w-[320px] shrink-0 flex flex-col">
-            <div className="bg-[#111622] border border-[#1e293b] rounded-lg p-5 h-full flex flex-col justify-between min-h-[280px] lg:min-h-[450px]">
-              {selectedNode ? (
-                <div>
-                  <div className="border-b border-[#1e293b] pb-3 mb-4">
-                    <span className="text-[9px] text-[#00F2FE] font-mono uppercase tracking-wider block mb-1">
-                      {selectedNode.role}
-                    </span>
-                    <h3 className="text-base font-bold text-white font-mono break-all">
-                      {selectedNode.ip}
-                    </h3>
-                    {selectedNode.host && (
-                      <span className="text-xs text-[#94A3B8] font-mono mt-1.5 block">
-                        Host: <span className="text-slate-300 font-semibold">{selectedNode.host}</span>
-                      </span>
-                    )}
-                  </div>
+        {/* ── SUB-NAVIGATION TABS ──────────────────────────────────────────── */}
+        <div className="max-w-[1720px] mx-auto mt-3 flex items-center gap-1 border-t border-slate-800/60 pt-2 overflow-x-auto">
+          {[
+            { id: 'overview',   label: 'NOC & Traffic Matrix',      icon: Activity },
+            { id: 'threats',    label: 'SOC Threat Triage (MITRE)', icon: ShieldAlert, badge: threatsList.length },
+            { id: 'topology',   label: 'Network Topology Map',      icon: Network },
+            { id: 'compliance', label: 'Regulatory Compliance',     icon: ShieldCheck, score: `${complianceScore}%` },
+            { id: 'inventory',  label: 'Asset Inventory Watchdog',  icon: Server, count: assetsList.length },
+            { id: 'pcap',       label: 'PCAP Ingest & Collector Lab',icon: Upload },
+            { id: 'exports',    label: 'Audit & PDF Exports',        icon: Download },
+          ].map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
+                  isActive 
+                    ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+                {tab.badge !== undefined && tab.badge > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-red-500 text-white text-[10px] font-bold">
+                    {tab.badge}
+                  </span>
+                )}
+                {tab.score && (
+                  <span className={`text-[10px] px-1 rounded ${
+                    complianceScore >= 85 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
+                  }`}>
+                    {tab.score}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </header>
 
-                  <div className="space-y-4 font-mono text-xs">
-                    {/* Geolocation */}
-                    {selectedNode.geo && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Geolocation</span>
-                        <span className="text-slate-100 font-medium">{selectedNode.geo}</span>
-                      </div>
-                    )}
+      {/* ── MAIN CONTENT CONTAINER ────────────────────────────────────────── */}
+      <main className="flex-grow max-w-[1720px] w-full mx-auto px-6 py-6 space-y-6">
 
-                    {/* Threat evaluation */}
-                    {selectedNode.threat !== undefined && selectedNode.threat > 0 && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Threat Score</span>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                          selectedNode.threat > 50 ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
-                          selectedNode.threat > 20 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
-                          'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+        {/* ═══ TAB 1: NOC & TRAFFIC MATRIX (OVERVIEW) ════════════════════════ */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6">
+            
+            {/* KPI Metrics Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4">
+              
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Total Flows</span>
+                  <Activity className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div className="text-2xl font-bold text-white font-mono">{totalFlows.toLocaleString()}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">In {timeWindow} window</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Volume / Throughput</span>
+                  <Cpu className="w-4 h-4 text-blue-400" />
+                </div>
+                <div className="text-2xl font-bold text-white font-mono">{fmtBytes(totalBytes)}</div>
+                <div className="text-[11px] text-cyan-400 font-mono mt-1">Avg {fmtBps(avgBps)} ({avgPps} pps)</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Active Assets</span>
+                  <Server className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-bold text-white font-mono">{assetsList.length}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">Internal nodes seen</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Public WAN Peers</span>
+                  <Globe className="w-4 h-4 text-violet-400" />
+                </div>
+                <div className="text-2xl font-bold text-white font-mono">{publicIPsList.length}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">External endpoints</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Primary Gateway</span>
+                  <Network className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="text-lg font-bold text-amber-400 font-mono truncate">{data?.gateway || 'Not identified'}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">{gatewaysList.length} total gateways</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">NAT Bypass Alerts</span>
+                  <AlertTriangle className="w-4 h-4 text-red-400" />
+                </div>
+                <div className="text-2xl font-bold text-red-400 font-mono">{natBypassList.length}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">Rogue router violations</div>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-mono">Ghost Assets</span>
+                  <Eye className="w-4 h-4 text-purple-400" />
+                </div>
+                <div className="text-2xl font-bold text-purple-400 font-mono">{absentIPsList.length}</div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">Silent in current {timeWindow}</div>
+              </div>
+
+            </div>
+
+            {/* Charts Row */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Top Talkers Bar Chart */}
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5">
+                <h3 className="text-xs font-semibold text-slate-300 font-mono uppercase tracking-wider mb-4 flex items-center justify-between">
+                  <span>Top Talkers (Byte Volume)</span>
+                  <span className="text-[10px] text-cyan-400">REQ 1</span>
+                </h3>
+                <div className="h-[240px]">
+                  {topTalkersData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topTalkersData} layout="vertical" margin={{ left: 20, right: 20 }}>
+                        <XAxis type="number" tickFormatter={fmtBytes} stroke="#475569" fontSize={10} />
+                        <YAxis type="category" dataKey="ip" stroke="#94A3B8" fontSize={11} width={85} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#070B13', borderColor: '#334155', borderRadius: '8px' }}
+                          formatter={(val) => [fmtBytes(val), 'Volume']}
+                          labelFormatter={(label) => `Host: ${label}`}
+                        />
+                        <Bar dataKey="bytes" radius={[0, 4, 4, 0]}>
+                          {topTalkersData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-xs font-mono text-slate-500">No flow data recorded</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Protocol Distribution */}
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5">
+                <h3 className="text-xs font-semibold text-slate-300 font-mono uppercase tracking-wider mb-4 flex items-center justify-between">
+                  <span>Protocol Breakdown</span>
+                  <span className="text-[10px] text-cyan-400">REQ 5</span>
+                </h3>
+                <div className="h-[240px]">
+                  {protocolChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={protocolChartData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={80}
+                          innerRadius={45}
+                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                          labelLine={false}
+                        >
+                          {protocolChartData.map((entry, index) => (
+                            <Cell key={`proto-${index}`} fill={PROTO_COLORS[entry.name] || CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip contentStyle={{ backgroundColor: '#070B13', borderColor: '#334155', borderRadius: '8px' }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-xs font-mono text-slate-500">No protocol telemetry</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Destination Port Risk Distribution */}
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5">
+                <h3 className="text-xs font-semibold text-slate-300 font-mono uppercase tracking-wider mb-4 flex items-center justify-between">
+                  <span>Top Destination Services</span>
+                  <span className="text-[10px] text-cyan-400">Ports & Services</span>
+                </h3>
+                <div className="space-y-2 overflow-y-auto max-h-[240px] pr-1 font-mono">
+                  {protocolsList.slice(0, 7).map((p, idx) => (
+                    <div key={idx} className="flex items-center justify-between bg-[#070B13] p-2 rounded border border-slate-800 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          p.risk === 'Critical' ? 'bg-red-500/20 text-red-400' :
+                          p.risk === 'High' ? 'bg-amber-500/20 text-amber-400' :
+                          p.risk === 'Medium' ? 'bg-yellow-500/20 text-yellow-300' :
+                          'bg-slate-700 text-slate-300'
                         }`}>
-                          {selectedNode.threat}/100 Risk Rating
+                          {p.service || `Port ${p.port}`}
+                        </span>
+                        <span className="text-slate-400">{p.port > 0 ? `${p.port}/${p.proto}` : p.proto}</span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-slate-200 font-semibold">{p.flows} flows</div>
+                        <div className="text-[10px] text-slate-500">{fmtBytes(p.bytes)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Unique Assets Table (Deliverable 1) */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-bold text-white font-mono">Internal Assets Discovered ({assetsList.length})</h3>
+                  <p className="text-xs text-slate-400 font-mono">Requirement 1: Private IP addresses, hostnames, protocols, and port bindings</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search IP or Host..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="bg-[#070B13] border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                    <tr>
+                      <th className="px-6 py-3">Asset IP</th>
+                      <th className="px-6 py-3">Hostname</th>
+                      <th className="px-6 py-3">Criticality</th>
+                      <th className="px-6 py-3">Department</th>
+                      <th className="px-6 py-3">Traffic Volume</th>
+                      <th className="px-6 py-3">Protocols Observed</th>
+                      <th className="px-6 py-3">Service Ports</th>
+                      <th className="px-6 py-3">Last Seen</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {assetsList
+                      .filter(a => !searchQuery || a.ip.includes(searchQuery) || a.host.toLowerCase().includes(searchQuery.toLowerCase()))
+                      .map((asset, idx) => (
+                        <tr key={idx} className="hover:bg-slate-800/30 transition">
+                          <td className="px-6 py-3.5 text-cyan-400 font-semibold">{asset.ip}</td>
+                          <td className="px-6 py-3.5 text-white">{asset.host}</td>
+                          <td className="px-6 py-3.5">
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 border border-slate-700 text-slate-300">
+                              {asset.criticality || 'Tier 2'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3.5 text-slate-400">{asset.department || 'Infrastructure'}</td>
+                          <td className="px-6 py-3.5 text-slate-200">
+                            {fmtBytes(asset.bytes)} <span className="text-slate-500 text-[10px]">({asset.flows} flows)</span>
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <div className="flex flex-wrap gap-1">
+                              {asset.protocols?.map((pr, pidx) => (
+                                <span key={pidx} className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[10px]">
+                                  {pr}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5 text-slate-400">
+                            {asset.ports?.length ? asset.ports.slice(0, 8).join(', ') + (asset.ports.length > 8 ? ` +${asset.ports.length - 8}` : '') : 'None'}
+                          </td>
+                          <td className="px-6 py-3.5 text-slate-400">{asset.lastSeen}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ═══ TAB 2: SOC THREAT TRIAGE (MITRE ATT&CK) ═══════════════════════ */}
+        {activeTab === 'threats' && (
+          <div className="space-y-6">
+            
+            {/* Posture Score & MITRE Overview */}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs font-semibold text-slate-400 font-mono uppercase tracking-wider mb-2">SOC Security Posture</h3>
+                  <div className="flex items-baseline gap-2">
+                    <span className={`text-4xl font-bold font-mono ${
+                      postureScore >= 80 ? 'text-emerald-400' : postureScore >= 50 ? 'text-amber-400' : 'text-red-400'
+                    }`}>
+                      {postureScore}
+                    </span>
+                    <span className="text-xs text-slate-500 font-mono">/ 100 Index</span>
+                  </div>
+                </div>
+                <div className="text-xs text-slate-400 font-mono mt-4">
+                  {threatsList.length === 0 ? 'No active MITRE ATT&CK violations.' : `${threatsList.length} active indicators requiring SOC triage.`}
+                </div>
+              </div>
+
+              <div className="lg:col-span-3 bg-[#0B101D] border border-slate-800 rounded-xl p-5">
+                <h3 className="text-xs font-semibold text-slate-400 font-mono uppercase tracking-wider mb-3">MITRE ATT&CK Enterprise Matrix Coverage</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 font-mono">
+                  {threats?.mitre_coverage?.map((m, idx) => (
+                    <div key={idx} className="bg-[#070B13] p-3 rounded-lg border border-slate-800">
+                      <div className="text-[10px] text-slate-500 uppercase">{m.tactic}</div>
+                      <div className="text-xs font-semibold text-slate-200 mt-1 truncate" title={m.technique}>{m.technique}</div>
+                      <div className="mt-2">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                          m.status.includes('Critical') ? 'bg-red-500/20 text-red-400' :
+                          m.status.includes('Alert') ? 'bg-amber-500/20 text-amber-400' :
+                          m.status.includes('Detected') ? 'bg-cyan-500/20 text-cyan-400' :
+                          'bg-emerald-500/20 text-emerald-400'
+                        }`}>
+                          {m.status}
                         </span>
                       </div>
-                    )}
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-                    {/* Associated protocols */}
-                    {selectedNode.protocols && selectedNode.protocols.length > 0 && (
+            </div>
+
+            {/* Threat Incident Stream */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <ShieldAlert className="w-5 h-5 text-red-400" />
+                  <div>
+                    <h3 className="text-sm font-bold text-white font-mono">Active Threat Incidents ({filteredThreats.length})</h3>
+                    <p className="text-xs text-slate-400 font-mono">MITRE ATT&CK techniques, lateral movements, and unauthorized perimeter bypasses</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {['ALL', 'Critical', 'High', 'Medium'].map(sev => (
+                    <button
+                      key={sev}
+                      onClick={() => setThreatFilter(sev)}
+                      className={`text-xs font-mono px-3 py-1 rounded-lg transition ${
+                        threatFilter === sev ? 'bg-cyan-500 text-black font-bold' : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {sev}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="divide-y divide-slate-800">
+                {filteredThreats.length > 0 ? (
+                  filteredThreats.map((t, idx) => (
+                    <div key={idx} className="p-5 hover:bg-slate-800/30 transition font-mono text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            t.severity === 'Critical' ? 'bg-red-500/20 text-red-400 border border-red-500/40' :
+                            t.severity === 'High' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                            'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40'
+                          }`}>
+                            {t.severity.toUpperCase()}
+                          </span>
+                          <span className="text-cyan-400 font-semibold">{t.mitre_id}</span>
+                          <span className="text-white font-medium">{t.mitre_name}</span>
+                        </div>
+                        <span className="text-slate-500 text-[11px]">{t.id}</span>
+                      </div>
+                      
+                      <p className="text-slate-300 text-xs mb-3">{t.details}</p>
+
+                      <div className="bg-[#070B13] p-3 rounded-lg border border-slate-800/80 flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400">
+                          <div><span className="text-slate-500">Asset:</span> <span className="text-cyan-400 font-semibold">{t.asset_ip}</span></div>
+                          {t.target_ip && <div><span className="text-slate-500">Target/Attacker:</span> <span className="text-red-400 font-semibold">{t.target_ip}</span></div>}
+                          {t.flows > 0 && <div><span className="text-slate-500">Flows:</span> <span className="text-white">{t.flows}</span></div>}
+                          {t.bytes > 0 && <div><span className="text-slate-500">Bytes:</span> <span className="text-white">{fmtBytes(t.bytes)}</span></div>}
+                        </div>
+                        <div className="text-[11px] text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20">
+                          <span className="font-semibold text-emerald-300">Remediation:</span> {t.remediation}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="p-12 text-center text-slate-500 font-mono text-xs">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                    No threats detected in the selected filter. Network operating within compliance bounds.
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ═══ TAB 3: NETWORK TOPOLOGY VISUALIZER ════════════════════════════ */}
+        {activeTab === 'topology' && (
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            
+            <div className="lg:col-span-3 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-[#0B101D] border border-slate-800 rounded-xl p-3">
+                <div className="flex items-center gap-2">
+                  <Network className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-mono font-bold text-white uppercase">Topology Projection:</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-xs">
+                  {[
+                    { id: 'topology', label: 'Full Mesh' },
+                    { id: 'asset-pubip', label: 'Asset ↔ Public WAN' },
+                    { id: 'gateway-flow', label: 'Gateway Perimeter' },
+                  ].map(v => (
+                    <button
+                      key={v.id}
+                      onClick={() => setActiveGraph(v.id)}
+                      className={`px-3 py-1 rounded-lg transition ${
+                        activeGraph === v.id ? 'bg-cyan-500 text-black font-semibold' : 'bg-[#070B13] text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Interactive Network Topology Visualizer */}
+              <div className="h-[640px] min-h-[580px]">
+                <NetworkGraph 
+                  type={activeGraph} 
+                  data={data} 
+                  selectedNode={selectedNode}
+                  onSelectNode={(node) => setSelectedNode(node)} 
+                />
+              </div>
+            </div>
+
+            {/* Node Inspector Drawer */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between font-mono text-xs">
+              <div>
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-4 flex items-center justify-between border-b border-slate-800 pb-3">
+                  <span>Node Telemetry Inspector</span>
+                  {selectedNode && <span className="text-cyan-400">ACTIVE</span>}
+                </h3>
+
+                {selectedNode ? (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase">IP Address</div>
+                      <div className="text-lg font-bold text-cyan-400">{selectedNode.ip || selectedNode.id}</div>
+                      <div className="text-xs text-slate-400">{selectedNode.host || selectedNode.role}</div>
+                    </div>
+
+                    <div className="bg-[#070B13] p-3 rounded-lg border border-slate-800 space-y-2">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Role:</span>
+                        <span className="text-white font-semibold">{selectedNode.role || 'Host'}</span>
+                      </div>
+                      {selectedNode.threat !== undefined && selectedNode.threat > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Threat Score:</span>
+                          <span className={`font-bold ${selectedNode.threat >= 60 ? 'text-red-400' : 'text-amber-400'}`}>
+                            {selectedNode.threat} / 100
+                          </span>
+                        </div>
+                      )}
+                      {selectedNode.bytes && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Bytes Volume:</span>
+                          <span className="text-white">{fmtBytes(selectedNode.bytes)}</span>
+                        </div>
+                      )}
+                      {selectedNode.flows && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Flow Count:</span>
+                          <span className="text-white">{selectedNode.flows}</span>
+                        </div>
+                      )}
+                      {selectedNode.geo && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Location/ASN:</span>
+                          <span className="text-slate-300">{selectedNode.geo}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedNode.protocols && (
                       <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1.5">Observed Protocols</span>
-                        <div className="flex gap-1.5 flex-wrap">
-                          {selectedNode.protocols.map((pr, pidx) => (
-                            <span key={pidx} className="bg-[#185FA5]/15 text-[#00F2FE] text-[9px] px-1.5 py-0.2 rounded border border-[#185FA5]/30">
+                        <div className="text-[10px] text-slate-500 uppercase mb-1">Protocols Bound</div>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedNode.protocols.map((pr, idx) => (
+                            <span key={idx} className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px]">
                               {pr}
                             </span>
                           ))}
                         </div>
                       </div>
                     )}
-
-                    {/* Associated ports */}
-                    {selectedNode.ports && selectedNode.ports.length > 0 && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Audited Dest Ports</span>
-                        <span className="text-slate-300 block max-h-[60px] overflow-y-auto pr-1">
-                          {selectedNode.ports.join(', ')}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Traffic metrics for assets */}
-                    {selectedNode.bytes !== undefined && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Metrics</span>
-                        <div className="mt-1.5 space-y-1.5">
-                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
-                            <span>Traffic:</span>
-                            <span className="font-bold text-slate-100">{fmtBytes(selectedNode.bytes)}</span>
-                          </div>
-                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
-                            <span>Flows:</span>
-                            <span className="font-bold text-slate-100">{selectedNode.flows}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Traffic metrics for peers */}
-                    {selectedNode.bytesIn !== undefined && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider">Metrics</span>
-                        <div className="mt-1.5 space-y-1.5">
-                          <div className="flex justify-between border-b border-[#1e293b]/40 pb-1 text-slate-300">
-                            <span>Inbound Bytes:</span>
-                            <span className="font-bold text-slate-100">{fmtBytes(selectedNode.bytesIn)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Peer connections */}
-                    {selectedNode.talksto && selectedNode.talksto.length > 0 && (
-                      <div>
-                        <span className="text-[#94A3B8] block text-[9px] uppercase tracking-wider mb-1">Target Internal IPs</span>
-                        <div className="max-h-[120px] overflow-y-auto space-y-1 pr-1">
-                          {selectedNode.talksto.map((targetIp, idx) => (
-                            <div key={idx} className="flex justify-between text-slate-300 border-b border-[#1e293b]/40 pb-1 text-[11px]">
-                              <span className="text-white font-semibold">{targetIp}</span>
-                              <span className="text-[#94A3B8] text-[9px]">({getHostname(targetIp)})</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
-                </div>
-              ) : (
-                <div className="flex flex-col justify-center items-center h-full text-center py-10 my-auto">
-                  <Network className="w-8 h-8 text-slate-500 mb-3 animate-pulse" />
-                  <span className="text-slate-400 font-mono text-xs font-semibold mb-1">Telemetry Inspector</span>
-                  <span className="text-slate-500 font-mono text-[10px] max-w-[200px] leading-relaxed">
-                    Click any node in the topology visualization to display active telemetry, geolocation, threat levels, and traffic flow details.
-                  </span>
-                </div>
-              )}
+                ) : (
+                  <div className="p-8 text-center text-slate-500">
+                    <Search className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+                    Click any node in the topology canvas to inspect real-time flow telemetry, ports, and risk metrics.
+                  </div>
+                )}
+              </div>
 
               {selectedNode && (
-                <button 
+                <button
                   onClick={() => setSelectedNode(null)}
-                  className="w-full mt-4 bg-[#121722] hover:bg-[#1c2436] text-[10px] font-mono text-slate-400 border border-slate-700 py-1.5 rounded transition-colors cursor-pointer"
+                  className="w-full mt-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
                 >
                   Clear Selection
                 </button>
               )}
             </div>
+
           </div>
+        )}
 
-        </div>
-      )}
+        {/* ═══ TAB 4: REGULATORY COMPLIANCE AUDITOR ══════════════════════════ */}
+        {activeTab === 'compliance' && (
+          <div className="space-y-6">
 
-      {/* ─── ASSET PROTECTION TAB ─────────────────────────────────────── */}
-      {activeTab === 'protection' && (
-        <div className="flex flex-col gap-6 animate-fade-in">
-
-          {/* Header */}
-          <div className="flex flex-col md:flex-row justify-between md:items-start gap-3">
-            <div>
-              <h3 className="text-sm font-semibold tracking-tight text-white uppercase tracking-wider font-mono flex items-center gap-2">
-                <Shield className="w-4 h-4 text-rose-400" />
-                Digital Asset Protection
-              </h3>
-              <p className="text-[10px] text-[#94A3B8] font-mono mt-0.5">Real-time threat analysis derived from captured network traffic</p>
-            </div>
-            {threats?.summary && (
-              <div className="flex gap-2 flex-wrap">
-                <span className="bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
-                  <AlertCircle className="w-3 h-3" />
-                  {threats.summary.critical_count} Critical
-                </span>
-                <span className="bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
-                  <AlertTriangle className="w-3 h-3" />
-                  {threats.summary.high_count} High
-                </span>
-                <span className="bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[10px] font-mono font-bold px-3 py-1.5 rounded flex items-center gap-1.5">
-                  <Activity className="w-3 h-3" />
-                  {threats.summary.medium_count} Medium
-                </span>
+            {/* Report Period (4-hour cycle) */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 font-mono text-xs flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-cyan-400" /> Compliance Report Period
+                </h3>
+                <p className="text-slate-400 mt-1">
+                  Showing {repPeriodLabel}. A report is stored automatically at every 4-hour UTC boundary
+                  {nextReportAt ? ` — next at ${nextReportAt.replace('T', ' ').replace('Z', ' UTC')} (in ${timeRemainingStr})` : ''}.
+                </p>
               </div>
-            )}
-          </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={selectedReportId}
+                  onChange={(e) => handleSelectReport(e.target.value === 'live' ? 'live' : Number(e.target.value))}
+                  className="bg-[#070B13] border border-slate-800 rounded-lg px-3 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500"
+                >
+                  <option value="live">Live — rolling 4h window</option>
+                  {storedReports.map(r => (
+                    <option key={r.id} value={r.id}>
+                      #{r.id} {r.window_start.slice(0, 16)} → {r.window_end.slice(11, 16)} UTC ({r.trigger})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleGenerateSnapshot}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 transition"
+                >
+                  Snapshot current period
+                </button>
+                <button
+                  onClick={handleDownloadReport}
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold transition flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download JSON
+                </button>
+              </div>
+            </div>
 
-          {/* Threat type summary strip */}
-          {threats?.summary && threats.summary.total_threats > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+            {/* Report Summary */}
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 font-mono">
               {[
-                { key: 'PUBLIC_ACCESS',         label: 'Public Access',       icon: <Eye className="w-3.5 h-3.5" />,       color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
-                { key: 'MALICIOUS_IP',          label: 'Malicious IPs',       icon: <AlertCircle className="w-3.5 h-3.5" />, color: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
-                { key: 'DANGEROUS_PROTOCOL',    label: 'Dangerous Protocols', icon: <Zap className="w-3.5 h-3.5" />,        color: 'text-orange-400 bg-orange-500/10 border-orange-500/20' },
-                { key: 'PORT_SCAN',             label: 'Port Scans',          icon: <Search className="w-3.5 h-3.5" />,     color: 'text-purple-400 bg-purple-500/10 border-purple-500/20' },
-                { key: 'EXCESSIVE_CONNECTIONS', label: 'Excessive Conns',     icon: <Activity className="w-3.5 h-3.5" />,   color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' },
-                { key: 'LATERAL_MOVEMENT',      label: 'Lateral Movement',    icon: <Network className="w-3.5 h-3.5" />,    color: 'text-pink-400 bg-pink-500/10 border-pink-500/20' },
-              ].map(item => (
-                <div key={item.key} className={`border rounded-lg p-3 flex flex-col items-center gap-1.5 ${item.color}`}>
-                  {item.icon}
-                  <span className="text-[9px] font-mono uppercase tracking-wider text-center leading-tight">{item.label}</span>
-                  <span className="text-lg font-bold font-mono">{threats.summary.by_type[item.key] || 0}</span>
+                { label: 'Internal Assets Identified', value: repAssets.length, color: 'text-cyan-400' },
+                { label: 'Protocols Identified', value: repProtocols.length, sub: repProtocols.join(', ') || '—', color: 'text-violet-400' },
+                { label: 'Service Ports Identified', value: repPorts.length, sub: repPorts.slice(0, 12).join(', ') || '—', color: 'text-blue-400' },
+                { label: 'IPs Not Seen in Traffic', value: repAbsent.length, color: 'text-purple-400' },
+                { label: 'Inventory Seen', value: `${reportData?.complianceScore ?? 0}%`, color: (reportData?.complianceScore ?? 0) >= 85 ? 'text-emerald-400' : 'text-amber-400' },
+              ].map((k, idx) => (
+                <div key={idx} className="bg-[#0B101D] border border-slate-800 rounded-xl p-4">
+                  <div className="text-[11px] text-slate-400">{k.label}</div>
+                  <div className={`text-2xl font-bold mt-1 ${k.color}`}>{k.value}</div>
+                  {k.sub && <div className="text-[10px] text-slate-500 mt-1 truncate" title={k.sub}>{k.sub}</div>}
                 </div>
               ))}
             </div>
-          )}
 
-          {/* Empty state */}
-          {(!threats || threats.threats.length === 0) && (
-            <div className="bg-gradient-to-r from-emerald-900/10 to-teal-900/10 border border-emerald-500/20 rounded-lg p-10 text-center">
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-12 w-12 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
-                  <ShieldCheck className="w-6 h-6 text-emerald-400" />
-                </div>
-                <h4 className="text-sm font-bold text-white font-mono">
-                  {data ? 'No Threats Detected' : 'No Traffic Data Yet'}
-                </h4>
-                <p className="text-xs text-[#94A3B8] font-mono max-w-md mx-auto leading-relaxed">
-                  {data
-                    ? 'All captured traffic appears clean. No public IP access, malicious IPs, dangerous protocols, port scans, or lateral movement detected.'
-                    : 'Upload a PCAP file or start live capture. The protection engine will automatically scan all flows for threats against your digital assets.'
-                  }
-                </p>
+            {/* Per-IP Protocols & Ports */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800">
+                <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+                  <Server className="w-4 h-4 text-cyan-400" />
+                  Identified Internal Assets — Protocols & Ports per IP ({repAssets.length})
+                </h3>
+                <p className="text-xs text-slate-400 font-mono">Listening = services the IP provides; Connects to = services it uses. Client ephemeral ports are excluded.</p>
               </div>
-            </div>
-          )}
-
-          {/* Per-asset threat cards */}
-          {threats?.threats && threats.threats.length > 0 && (
-            <div className="flex flex-col gap-4">
-              {threats.threats.map((asset, assetIdx) => {
-                const borderColor = asset.worst_severity === 'Critical' ? 'border-rose-500/40'
-                                  : asset.worst_severity === 'High' ? 'border-amber-500/30'
-                                  : 'border-blue-500/20';
-                const headerBg = asset.worst_severity === 'Critical' ? 'bg-rose-500/10'
-                               : asset.worst_severity === 'High' ? 'bg-amber-500/10'
-                               : 'bg-blue-500/10';
-                const severityColor = asset.worst_severity === 'Critical' ? 'text-rose-400'
-                                    : asset.worst_severity === 'High' ? 'text-amber-400'
-                                    : 'text-blue-400';
-
-                return (
-                  <div key={assetIdx} className={`bg-[#111622] border rounded-lg overflow-hidden ${borderColor}`}>
-                    {/* Asset header */}
-                    <div className={`${headerBg} border-b ${borderColor} px-4 py-3 flex items-center justify-between`}>
-                      <div className="flex items-center gap-3">
-                        <Lock className={`w-4 h-4 ${severityColor}`} />
-                        <div>
-                          <span className="text-white font-mono font-bold text-sm">{asset.asset_ip}</span>
-                          <span className="text-[#94A3B8] font-mono text-[10px] ml-2">({asset.asset_host})</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {asset.critical_count > 0 && (
-                          <span className="bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                            {asset.critical_count} CRITICAL
-                          </span>
-                        )}
-                        {asset.high_count > 0 && (
-                          <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                            {asset.high_count} HIGH
-                          </span>
-                        )}
-                        {asset.medium_count > 0 && (
-                          <span className="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                            {asset.medium_count} MEDIUM
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Individual threats */}
-                    <div className="divide-y divide-[#1e293b]/40">
-                      {asset.threats.map((threat, threatIdx) => {
-                        const tColor = threat.severity === 'Critical' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20'
-                                     : threat.severity === 'High' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-                                     : 'text-blue-400 bg-blue-500/10 border-blue-500/20';
-                        const typeIcons = {
-                          'PUBLIC_ACCESS': <Eye className="w-3.5 h-3.5" />,
-                          'MALICIOUS_IP': <AlertCircle className="w-3.5 h-3.5" />,
-                          'DANGEROUS_PROTOCOL': <Zap className="w-3.5 h-3.5" />,
-                          'PORT_SCAN': <Search className="w-3.5 h-3.5" />,
-                          'EXCESSIVE_CONNECTIONS': <Activity className="w-3.5 h-3.5" />,
-                          'LATERAL_MOVEMENT': <Network className="w-3.5 h-3.5" />,
-                        };
-                        return (
-                          <div key={threatIdx} className="px-4 py-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-start gap-2.5 min-w-0">
-                                <span className={`mt-0.5 flex-shrink-0 flex items-center justify-center rounded p-1 border ${tColor}`}>
-                                  {typeIcons[threat.type] || <AlertTriangle className="w-3.5 h-3.5" />}
-                                </span>
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                    <span className="text-[10px] font-mono font-bold text-slate-200 uppercase tracking-wider">
-                                      {threat.type.replace(/_/g, ' ')}
-                                    </span>
-                                    {threat.source_ip && (
-                                      <span className="text-[9px] font-mono text-[#94A3B8]">← {threat.source_ip}</span>
-                                    )}
-                                    {threat.source_geo && (
-                                      <span className="text-[9px] font-mono text-slate-500">{threat.source_geo}</span>
-                                    )}
-                                    {threat.source_threat > 0 && (
-                                      <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${tColor}`}>
-                                        threat: {threat.source_threat}/100
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-[11px] text-slate-400 font-mono leading-relaxed">{threat.description}</p>
-                                </div>
-                              </div>
-                              <div className="flex-shrink-0">
-                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded border font-mono ${tColor}`}>
-                                  {threat.severity}
-                                </span>
-                              </div>
-                            </div>
-                            {threat.recommendation && (
-                              <div className="mt-2 ml-8 bg-[#0c101a] border border-[#1e293b] rounded p-2.5">
-                                <span className="text-[9px] font-mono uppercase tracking-wider text-emerald-400 block mb-0.5">Recommendation</span>
-                                <p className="text-[10px] font-mono text-slate-300 leading-relaxed">{threat.recommendation}</p>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'compliance' && (
-        <div className="flex flex-col gap-6 animate-fade-in">
-          
-          {/* Header Row */}
-          <div className="flex flex-col md:flex-row justify-between md:items-center gap-3">
-            <div>
-              <h3 className="text-sm font-semibold tracking-tight text-white uppercase tracking-wider font-mono">NetFlow Compliance Report</h3>
-              <p className="text-[10px] text-[#94A3B8] font-mono mt-0.5">Calculated over sliding 4-hour capture integrity audits</p>
-            </div>
-            <button 
-              onClick={handleExportCSV}
-              className="flex items-center gap-2 bg-[#121722] hover:bg-[#1a2336] text-xs font-mono text-slate-200 border border-slate-700 px-4 py-2 rounded transition-colors self-start md:self-auto cursor-pointer"
-            >
-              <Upload className="w-3.5 h-3.5 rotate-180" /> Export CSV
-            </button>
-          </div>
-
-          {/* Compliance Metrics Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
-            {[
-              { label: 'Compliant Assets', val: compliantCount, icon: <ShieldCheck className="w-5 h-5 text-emerald-400" /> },
-              { label: 'Partial Compliance', val: partialCount, icon: <AlertTriangle className="w-5 h-5 text-amber-400" /> },
-              { label: 'Non-Compliant', val: nonCompliantCount, icon: <AlertCircle className="w-5 h-5 text-rose-400" /> },
-              { label: 'Absent Assets', val: absentIPsList.length, icon: <AlertCircle className="w-5 h-5 text-rose-500" /> },
-              { label: 'Overall Score', val: overallScore !== null ? `${overallScore}%` : '—', icon: <Activity className="w-5 h-5 text-[#00F2FE]" />, textClass: 'text-[#00F2FE]' },
-            ].map((metric, i) => (
-              <div key={i} className="bg-[#111622] border border-[#1e293b] rounded-lg p-4 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-[#94A3B8] font-mono uppercase tracking-wider block mb-1">{metric.label}</span>
-                  <span className={`text-xl font-bold font-mono tracking-tight ${metric.textClass || 'text-white'}`}>{metric.val}</span>
-                </div>
-                {metric.icon}
-              </div>
-            ))}
-          </div>
-
-          {/* Compliance Status Cards Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
-            {assetComplianceDetails.length === 0 ? (
-              <div className="col-span-full bg-[#111622] border border-dashed border-slate-800 rounded-lg p-8 text-center text-slate-500 font-mono text-xs">
-                No internal assets evaluated. Run a traffic capture to audit compliance.
-              </div>
-            ) : (
-              assetComplianceDetails.map((asset, idx) => {
-                const borderClass = asset.score >= 80 ? 'border-emerald-500/20' : 
-                                    asset.score > 50 ? 'border-amber-500/20' : 
-                                    'border-rose-500/20 warning-pulse';
-                const textClass = asset.score >= 80 ? 'text-emerald-400' : 
-                                  asset.score > 50 ? 'text-amber-400' : 
-                                  'text-rose-400';
-                const progressBg = asset.score >= 80 ? 'bg-emerald-400' : 
-                                   asset.score > 50 ? 'bg-amber-400' : 
-                                   'bg-rose-400';
-                
-                return (
-                  <div key={idx} className={`bg-[#111622] border rounded-lg p-4 flex flex-col justify-between ${borderClass}`}>
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-white font-mono font-bold text-sm">{asset.ip}</span>
-                        <span className={`text-xs font-mono font-bold ${textClass}`}>{asset.score}%</span>
-                      </div>
-                      <span className="text-[10px] text-[#94A3B8] font-mono block mb-3">{asset.host}</span>
-                      
-                      <div className="space-y-1.5 font-mono text-[10px]">
-                        <div className="flex justify-between text-[#94A3B8] border-b border-[#1e293b]/40 pb-1">
-                          <span>Protocols</span>
-                          <span className="text-slate-300 font-semibold">{asset.protosUsed.join(', ') || 'None'}</span>
-                        </div>
-                        <div className="flex justify-between text-[#94A3B8] border-b border-[#1e293b]/40 pb-1">
-                          <span>Via Gateway</span>
-                          <span className="flex items-center gap-1">
-                            <span className={`h-1.5 w-1.5 rounded-full ${asset.viaGateway ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
-                            <span className={asset.viaGateway ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                              {asset.viaGateway ? 'Yes' : 'Bypass'}
-                            </span>
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-4">
-                      <div className="h-1 bg-[#080B10] rounded-full overflow-hidden">
-                        <div className={`h-full ${progressBg} rounded-full`} style={{ width: `${asset.score}%` }}></div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Absent Assets panel */}
-          <div className="bg-[#111622] border border-[#1e293b] rounded-lg overflow-hidden">
-            <div className="p-4 border-b border-[#1e293b]">
-              <h3 className="text-xs font-semibold text-white tracking-wider uppercase font-mono">Expected assets absent in current 4h traffic</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs">
-                <thead>
-                  <tr className="bg-[#0c101a] border-b border-[#1e293b] text-[#94A3B8] font-medium uppercase text-[10px] tracking-wider">
-                    <th className="p-3">IP Address</th>
-                    <th className="p-3">Hostname</th>
-                    <th className="p-3">Last Seen</th>
-                    <th className="p-3">Expected Protocol Profile</th>
-                    <th className="p-3 text-right">Compliance Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1e293b]/40">
-                  {absentIPsList.length === 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
                     <tr>
-                      <td colSpan="5" className="p-8 text-center text-slate-500 font-mono">
-                        {assetsList.length === 0 ? "Awaiting traffic capture to identify absent assets." : "No expected assets are absent (all are active)."}
-                      </td>
+                      <th className="px-6 py-3">Asset IP</th>
+                      <th className="px-6 py-3">Hostname</th>
+                      <th className="px-6 py-3">Protocols</th>
+                      <th className="px-6 py-3">Listening Ports</th>
+                      <th className="px-6 py-3">Connects To Ports</th>
+                      <th className="px-6 py-3">Flows</th>
+                      <th className="px-6 py-3">Last Seen</th>
                     </tr>
-                  ) : (
-                    absentIPsList.map((absent, idx) => (
-                      <tr key={idx} className="hover:bg-[#1c2436]/20 transition-colors">
-                        <td className="p-3 text-slate-400 font-bold">{absent.ip}</td>
-                        <td className="p-3 text-slate-500">{getHostname(absent.ip)}</td>
-                        <td className="p-3 text-slate-400">{absent.lastSeen}</td>
-                        <td className="p-3 text-slate-400">{absent.expectedProtos}</td>
-                        <td className="p-3 text-right">
-                          <span className="bg-rose-500/10 text-rose-500 border border-rose-500/20 text-[9px] font-bold px-2 py-0.5 rounded uppercase">Absent</span>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {repAssets.length > 0 ? repAssets.map((a, idx) => (
+                      <tr key={idx} className="hover:bg-slate-800/30 transition">
+                        <td className="px-6 py-3 text-cyan-400 font-semibold">{a.ip}</td>
+                        <td className="px-6 py-3 text-white">{a.host}</td>
+                        <td className="px-6 py-3 text-purple-300">{a.protocols?.join(', ')}</td>
+                        <td className="px-6 py-3 text-emerald-300">{a.listeningPorts?.join(', ') || '—'}</td>
+                        <td className="px-6 py-3 text-slate-300">{a.clientPorts?.join(', ') || '—'}</td>
+                        <td className="px-6 py-3 text-slate-400">{a.flows}</td>
+                        <td className="px-6 py-3 text-slate-400">{a.lastSeen}</td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={7} className="px-6 py-8 text-center text-slate-500">No internal assets observed in this period.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Protocols & Ports in the period */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800">
+                <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-violet-400" />
+                  Identified Protocols & Ports ({repProtoPorts.length})
+                </h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                    <tr>
+                      <th className="px-6 py-3">Protocol</th>
+                      <th className="px-6 py-3">Port</th>
+                      <th className="px-6 py-3">Service</th>
+                      <th className="px-6 py-3">Flows</th>
+                      <th className="px-6 py-3">Volume</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {repProtoPorts.map((p, idx) => (
+                      <tr key={idx} className="hover:bg-slate-800/30 transition">
+                        <td className="px-6 py-3 text-purple-300">{p.proto}</td>
+                        <td className="px-6 py-3 text-white">{p.port > 0 ? p.port : '—'}</td>
+                        <td className="px-6 py-3 text-slate-300">{p.service}</td>
+                        <td className="px-6 py-3 text-slate-400">{p.flows}</td>
+                        <td className="px-6 py-3 text-slate-400">{fmtBytes(p.bytes)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Framework Scorecards (live) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {audit?.frameworks && Object.entries(audit.frameworks).map(([key, f]) => (
+                <div key={key} className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-mono font-bold text-white">{f.name}</span>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
+                        f.grade === 'PASS' ? 'bg-emerald-500/20 text-emerald-400' :
+                        f.grade === 'WARN' ? 'bg-amber-500/20 text-amber-400' :
+                        'bg-red-500/20 text-red-400'
+                      }`}>
+                        {f.grade}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono mb-4">{f.scope}</p>
+                  </div>
+                  <div>
+                    <div className="flex items-baseline justify-between text-xs font-mono mb-1">
+                      <span className="text-slate-400">Score</span>
+                      <span className="font-bold text-white">{f.score}%</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full ${f.score >= 80 ? 'bg-emerald-500' : f.score >= 60 ? 'bg-amber-500' : 'bg-red-500'}`}
+                        style={{ width: `${f.score}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Ghost Asset Watchdog & Absent IPs (Requirement 7) */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+                    <Eye className="w-4 h-4 text-purple-400" />
+                    Ghost / Absent Asset Watchdog ({repAbsent.length})
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">Requirement 7: Configured inventory assets with zero observed traffic in the selected 4h period</p>
+                </div>
+                <span className="text-xs font-mono px-2.5 py-1 rounded bg-purple-500/10 text-purple-400 border border-purple-500/30">
+                  NIST CM-8 / CIS 1.1
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                    <tr>
+                      <th className="px-6 py-3">Asset IP</th>
+                      <th className="px-6 py-3">Expected Hostname</th>
+                      <th className="px-6 py-3">Criticality</th>
+                      <th className="px-6 py-3">Department</th>
+                      <th className="px-6 py-3">Expected Protocols</th>
+                      <th className="px-6 py-3">Downtime Duration</th>
+                      <th className="px-6 py-3">Compliance Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {repAbsent.length > 0 ? (
+                      repAbsent.map((a, idx) => (
+                        <tr key={idx} className="hover:bg-slate-800/30 transition">
+                          <td className="px-6 py-3.5 text-purple-400 font-semibold">{a.ip}</td>
+                          <td className="px-6 py-3.5 text-white">{a.host}</td>
+                          <td className="px-6 py-3.5">
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-red-500/10 text-red-300 border border-red-500/20">
+                              {a.criticality || 'Tier 2'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3.5 text-slate-400">{a.department || 'IT Ops'}</td>
+                          <td className="px-6 py-3.5 text-slate-300">{a.expectedProtos}</td>
+                          <td className="px-6 py-3.5 text-amber-400 font-semibold">{a.lastSeen}</td>
+                          <td className="px-6 py-3.5">
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300">
+                              {a.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={7} className="px-6 py-8 text-center text-slate-500 font-mono">
+                          All registered inventory assets are actively communicating in this period.
                         </td>
                       </tr>
-                    ))
-                  )}
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* NAT Bypass Rogue Router Table (Requirement 4) */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-red-400" />
+                    Paths Not Through the Gateway — Proposed NAT ({repNat.length})
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">Requirement 4: Internal endpoints reaching public IPs via a next hop other than gateway {reportData?.gateway || '(not identified)'}</p>
+                </div>
+                <span className="text-xs font-mono px-2.5 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/30">
+                  PCI 1.2.1 / NIST AC-4
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                    <tr>
+                      <th className="px-6 py-3">Source Host</th>
+                      <th className="px-6 py-3">Unauthorized Nexthop</th>
+                      <th className="px-6 py-3">External Destination</th>
+                      <th className="px-6 py-3">Bypass Flows</th>
+                      <th className="px-6 py-3">Bytes Egressed</th>
+                      <th className="px-6 py-3">Remediation Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {repNat.length > 0 ? (
+                      repNat.map((nb, idx) => (
+                        <tr key={idx} className="hover:bg-slate-800/30 transition">
+                          <td className="px-6 py-3.5 text-red-400 font-semibold">{nb.src} ({nb.host})</td>
+                          <td className="px-6 py-3.5 text-amber-400 font-bold">{nb.nexthop}</td>
+                          <td className="px-6 py-3.5 text-white">{nb.dst}</td>
+                          <td className="px-6 py-3.5 text-slate-300">{nb.flows}</td>
+                          <td className="px-6 py-3.5 text-slate-200">{fmtBytes(nb.bytes)}</td>
+                          <td className="px-6 py-3.5 text-emerald-400">{nb.recommendation}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500 font-mono">
+                          {reportData?.gateway ? `All egress routes through ${reportData.gateway}.` : 'No next-hop information in this period, so the gateway cannot be identified.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ═══ TAB 5: ASSET INVENTORY MANAGEMENT ═════════════════════════════ */}
+        {activeTab === 'inventory' && (
+          <div className="space-y-6 font-mono">
+            
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-bold text-white">Enterprise Asset Inventory ({assetsInventory.length})</h3>
+                <p className="text-xs text-slate-400 mt-1">Configure mission-critical assets, departments, compliance scopes, and expected services.</p>
+              </div>
+              <button
+                onClick={() => setIsAddAssetModalOpen(true)}
+                className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <Plus className="w-4 h-4" /> Add Asset
+              </button>
+            </div>
+
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#070B13] text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                  <tr>
+                    <th className="px-6 py-3">IP Address</th>
+                    <th className="px-6 py-3">Hostname</th>
+                    <th className="px-6 py-3">Criticality Tier</th>
+                    <th className="px-6 py-3">Department</th>
+                    <th className="px-6 py-3">Expected Protocols</th>
+                    <th className="px-6 py-3">Compliance Scope</th>
+                    <th className="px-6 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {assetsInventory.map((a, idx) => (
+                    <tr key={idx} className="hover:bg-slate-800/30 transition">
+                      <td className="px-6 py-3.5 text-cyan-400 font-semibold">{a.ip}</td>
+                      <td className="px-6 py-3.5 text-white">{a.hostname}</td>
+                      <td className="px-6 py-3.5">
+                        <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 border border-slate-700 text-slate-300">
+                          {a.criticality}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3.5 text-slate-400">{a.department}</td>
+                      <td className="px-6 py-3.5 text-purple-300">{a.expected_protocols}</td>
+                      <td className="px-6 py-3.5 text-slate-400">{a.compliance_scope}</td>
+                      <td className="px-6 py-3.5 text-right">
+                        <button
+                          onClick={() => handleDeleteAsset(a.ip)}
+                          className="text-red-400 hover:text-red-300 p-1 transition"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Sleek Custom Dark-Themed Reset Confirmation Modal */}
-      {isResetModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fade-in px-4">
-          <div className="bg-[#0c101a] border border-slate-800 rounded-xl p-6 w-full max-w-md shadow-2xl transition-all scale-100 select-none">
-            <div className="flex items-center space-x-3 text-rose-500 mb-4">
-              <AlertTriangle className="h-6 w-6 text-rose-500 animate-pulse" />
-              <h3 className="text-lg font-bold text-slate-100 font-mono">Confirm Database Reset</h3>
+          </div>
+        )}
+
+        {/* ═══ TAB 6: PCAP INGEST & COLLECTOR LAB ════════════════════════════ */}
+        {activeTab === 'pcap' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 font-mono text-xs">
+            
+            {/* Upload Zone */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 space-y-5">
+              <div>
+                <h3 className="text-sm font-bold text-white mb-1">PCAP Ingestion & Parsing</h3>
+                <p className="text-slate-400 text-xs">Upload raw Ethernet packet captures or NetFlow v5 UDP collector dumps.</p>
+              </div>
+
+              <div className="bg-[#070B13] p-4 rounded-xl border border-slate-800 space-y-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={shiftToNow}
+                    onChange={(e) => setShiftToNow(e.target.checked)}
+                    className="w-4 h-4 rounded text-cyan-500 focus:ring-0"
+                  />
+                  <span className="text-slate-200 text-xs font-semibold">
+                    Auto-normalize timestamps to active 4h window (Recommended)
+                  </span>
+                </label>
+                <p className="text-[11px] text-slate-400 ml-6">
+                  Shifts historical PCAP packet times so they land right within the current 4-hour window, immediately lighting up live charts and ghost asset watchdogs.
+                </p>
+              </div>
+
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-slate-700 hover:border-cyan-500 rounded-xl p-10 text-center cursor-pointer transition bg-[#070B13]/50"
+              >
+                <Upload className="w-8 h-8 text-cyan-400 mx-auto mb-3 animate-bounce" />
+                <div className="text-slate-200 font-semibold">Click to select PCAP / PCAPng file</div>
+                <div className="text-slate-500 text-[11px] mt-1">Supports test_traffic.pcap, Cisco/Juniper dumps, Wireshark files</div>
+              </div>
             </div>
+
+            {/* Replay Instructions & CLI */}
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-white mb-1">NetFlow Replay Daemon (UDP:2055)</h3>
+                <p className="text-slate-400 text-xs">Stream test traffic over UDP into the active background collector daemon.</p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="bg-[#070B13] p-3 rounded-lg border border-slate-800">
+                  <div className="text-[11px] text-slate-400 mb-1">1. Generate test traffic PCAP:</div>
+                  <code className="text-cyan-400 text-xs">python backend/generate_test_pcap.py</code>
+                </div>
+
+                <div className="bg-[#070B13] p-3 rounded-lg border border-slate-800">
+                  <div className="text-[11px] text-slate-400 mb-1">2. Replay PCAP to local collector:</div>
+                  <code className="text-cyan-400 text-xs">python backend/replay_pcap.py backend/test_traffic.pcap</code>
+                </div>
+
+                <div className="bg-[#070B13] p-3 rounded-lg border border-slate-800">
+                  <div className="text-[11px] text-slate-400 mb-1">3. Live capture with Scapy:</div>
+                  <code className="text-cyan-400 text-xs">Click "Live Sniff" in top navigation bar</code>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ═══ TAB 7: EXECUTIVE AUDIT & PDF EXPORTS ══════════════════════════ */}
+        {activeTab === 'exports' && (
+          <div className="space-y-6 font-mono">
             
-            <p className="text-xs md:text-sm text-slate-400 mb-6 leading-relaxed font-mono">
-              Are you absolutely sure you want to clear all captured traffic flows and reset the database? This action cannot be undone.
+            <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-bold text-white">Executive Compliance & Audit Suite</h3>
+                <p className="text-xs text-slate-400 mt-1">Export full compliance audits, raw flow datasets, and MITRE incident logs.</p>
+              </div>
+              <button
+                onClick={() => window.print()}
+                className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <Download className="w-4 h-4" /> Print / Save Executive Audit PDF
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Flow Telemetry CSV</h4>
+                  <p className="text-xs text-slate-400 mb-4">Complete 5-tuple flow dataset (Source, Destination, Ports, Nexthops, Bytes).</p>
+                </div>
+                <a
+                  href="http://localhost:8000/api/export/csv?dataset=flows"
+                  className="w-full py-2 text-center rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold border border-slate-700 transition"
+                >
+                  Download Flows CSV
+                </a>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Asset Inventory CSV</h4>
+                  <p className="text-xs text-slate-400 mb-4">Export enterprise asset registry, departments, and compliance mappings.</p>
+                </div>
+                <a
+                  href="http://localhost:8000/api/export/csv?dataset=assets"
+                  className="w-full py-2 text-center rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-bold border border-slate-700 transition"
+                >
+                  Download Assets CSV
+                </a>
+              </div>
+
+              <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">MITRE ATT&CK Incidents CSV</h4>
+                  <p className="text-xs text-slate-400 mb-4">Export all active security incidents and remediation playbooks.</p>
+                </div>
+                <a
+                  href="http://localhost:8000/api/export/csv?dataset=threats"
+                  className="w-full py-2 text-center rounded-lg bg-slate-800 hover:bg-slate-700 text-red-400 text-xs font-bold border border-slate-700 transition"
+                >
+                  Download Threat Log CSV
+                </a>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+      </main>
+
+      {/* ── RESET MODAL ───────────────────────────────────────────────────── */}
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 max-w-md w-full font-mono text-xs">
+            <h3 className="text-sm font-bold text-white mb-2 flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-5 h-5 text-red-400" />
+              Reset Database & Flows?
+            </h3>
+            <p className="text-slate-400 mb-6">
+              This will permanently delete all ingested NetFlow records from DuckDB. Asset inventory configurations will be preserved.
             </p>
-            
-            <div className="flex justify-end space-x-3 font-mono text-xs">
+            <div className="flex justify-end gap-3">
               <button
                 onClick={() => setIsResetModalOpen(false)}
-                className="px-4 py-2 font-medium text-slate-400 bg-slate-900/60 border border-slate-800 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
               >
                 Cancel
               </button>
               <button
-                onClick={async () => {
-                  setIsResetModalOpen(false);
-                  await handleClearDatabase(); 
-                }}
-                className="px-4 py-2 font-medium text-white bg-rose-600 rounded-lg hover:bg-rose-500 active:bg-rose-700 shadow-lg shadow-rose-950/20 transition-all cursor-pointer"
+                onClick={handleClearDatabase}
+                className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white font-bold transition"
               >
-                Delete Everything
+                Confirm Reset
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* ── ADD ASSET MODAL ───────────────────────────────────────────────── */}
+      {isAddAssetModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B101D] border border-slate-800 rounded-xl p-6 max-w-lg w-full font-mono text-xs">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-white">Register Enterprise Asset</h3>
+              <button onClick={() => setIsAddAssetModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
+            </div>
+            
+            <form onSubmit={handleSaveAsset} className="space-y-4">
+              <div>
+                <label className="text-[10px] text-slate-400 uppercase">IP Address</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 10.0.0.99"
+                  value={newAsset.ip}
+                  onChange={(e) => setNewAsset({ ...newAsset, ip: e.target.value })}
+                  className="w-full bg-[#070B13] border border-slate-800 rounded-lg px-3 py-2 text-slate-200 mt-1 focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-400 uppercase">Hostname</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. core-auth-srv"
+                  value={newAsset.hostname}
+                  onChange={(e) => setNewAsset({ ...newAsset, hostname: e.target.value })}
+                  className="w-full bg-[#070B13] border border-slate-800 rounded-lg px-3 py-2 text-slate-200 mt-1 focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase">Criticality Tier</label>
+                  <select
+                    value={newAsset.criticality}
+                    onChange={(e) => setNewAsset({ ...newAsset, criticality: e.target.value })}
+                    className="w-full bg-[#070B13] border border-slate-800 rounded-lg px-3 py-2 text-slate-200 mt-1 focus:outline-none focus:border-cyan-500"
+                  >
+                    <option>Tier 1 (Mission-Critical)</option>
+                    <option>Tier 2 (Business)</option>
+                    <option>Tier 3 (Internal)</option>
+                    <option>Tier 4 (Peripheral)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 uppercase">Department</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. IT Ops"
+                    value={newAsset.department}
+                    onChange={(e) => setNewAsset({ ...newAsset, department: e.target.value })}
+                    className="w-full bg-[#070B13] border border-slate-800 rounded-lg px-3 py-2 text-slate-200 mt-1 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-400 uppercase">Expected Protocols</label>
+                <input
+                  type="text"
+                  placeholder="e.g. TCP,UDP,HTTPS"
+                  value={newAsset.expected_protocols}
+                  onChange={(e) => setNewAsset({ ...newAsset, expected_protocols: e.target.value })}
+                  className="w-full bg-[#070B13] border border-slate-800 rounded-lg px-3 py-2 text-slate-200 mt-1 focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddAssetModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold transition"
+                >
+                  Save Asset
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── FOOTER ────────────────────────────────────────────────────────── */}
+      <footer className="border-t border-slate-800/80 px-6 py-4 bg-[#0B101D] text-xs font-mono text-slate-500 flex flex-wrap items-center justify-between gap-4">
+        <div>HTC NetFlow Analyzer Pro — Enterprise Industrial Edition</div>
+        <div className="flex items-center gap-4">
+          <span>Storage: DuckDB Columnar</span>
+          <span>Window: {timeWindow}</span>
+          <span>Refresh: {refreshInterval}s</span>
+          <span className="text-cyan-400">{data?.timestamp || 'Ready'}</span>
+        </div>
+      </footer>
+
     </div>
   );
-}
-
-// Hostname derived purely from the IP last-octet (no hardcoded topology)
-function getHostname(ip) {
-  if (!ip) return 'unknown';
-  const last = ip.split('.').pop();
-  return `node-${last}`;
 }
 
 export default App;

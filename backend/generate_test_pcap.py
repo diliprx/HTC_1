@@ -3,8 +3,14 @@
 Generate a realistic test PCAP for HTC NetFlow compliance dashboard.
 FIX: Wraps all packets in Ether() to produce Ethernet linktype (1),
      so pcap_parser.py can parse them correctly (was Raw IP = linktype 228).
+
+Layer 2 models the real topology: every host has its own MAC, outbound
+traffic is addressed to the MAC of the router it egresses through, and ARP
+replies announce the routers. Hosts in NAT_BYPASS egress via a second router
+(10.0.0.99) instead of the gateway (10.0.0.1); the analyzer has to discover
+that from the MACs, nothing is labelled in the capture.
 """
-from scapy.all import Ether, IP, TCP, UDP, ICMP, Raw, wrpcap
+from scapy.all import Ether, ARP, IP, TCP, UDP, ICMP, Raw, wrpcap
 import random
 
 OUTPUT_FILE = "test_traffic.pcap"
@@ -35,9 +41,32 @@ PUBLIC = {
     "142.250.80.46":  {"port": 443,  "proto": "TCP"},
 }
 
-# Dummy MAC addresses for Ethernet header (required for linktype=1)
-SRC_MAC = "02:00:00:00:00:01"
-DST_MAC = "02:00:00:00:00:02"
+GATEWAY_IP  = "10.0.0.1"
+GATEWAY_MAC = "02:00:0a:00:00:01"
+ROGUE_IP    = "10.0.0.99"
+ROGUE_MAC   = "02:00:0a:00:00:63"
+ISP_MAC     = "02:ff:00:00:00:01"   # upstream ISP router, seen by gateway-originated traffic
+
+def is_private(ip):
+    p = list(map(int, ip.split('.')))
+    return p[0] == 10 or (p[0] == 192 and p[1] == 168) or (p[0] == 172 and 16 <= p[1] <= 31)
+
+def host_mac(ip):
+    if ip == GATEWAY_IP:
+        return GATEWAY_MAC
+    return "02:00:" + ":".join(f"{int(o):02x}" for o in ip.split('.'))
+
+def router_mac(internal_ip):
+    return ROGUE_MAC if internal_ip in NAT_BYPASS else GATEWAY_MAC
+
+def l2(src, dst):
+    """Ethernet header as seen on the internal LAN segment."""
+    if is_private(src) and not is_private(dst):
+        dmac = ISP_MAC if src == GATEWAY_IP else router_mac(src)
+        return Ether(src=host_mac(src), dst=dmac)
+    if not is_private(src) and is_private(dst):
+        return Ether(src=router_mac(dst), dst=host_mac(dst))
+    return Ether(src=host_mac(src), dst=host_mac(dst))
 
 packets = []
 pkt_id  = 0
@@ -45,21 +74,21 @@ random.seed(42)
 
 def eth_tcp(src, dst, sport, dport, payload="DATA", flags="PA"):
     global pkt_id; pkt_id += 1
-    return (Ether(src=SRC_MAC, dst=DST_MAC) /
+    return (l2(src, dst) /
             IP(src=src, dst=dst, id=pkt_id) /
             TCP(sport=sport, dport=dport, flags=flags) /
             Raw(load=payload[:200].encode() if isinstance(payload, str) else payload[:200]))
 
 def eth_udp(src, dst, sport, dport, payload=b"DATA"):
     global pkt_id; pkt_id += 1
-    return (Ether(src=SRC_MAC, dst=DST_MAC) /
+    return (l2(src, dst) /
             IP(src=src, dst=dst, id=pkt_id) /
             UDP(sport=sport, dport=dport) /
             Raw(load=payload[:100] if isinstance(payload, bytes) else payload[:100].encode()))
 
 def eth_icmp(src, dst):
     global pkt_id; pkt_id += 1
-    return (Ether(src=SRC_MAC, dst=DST_MAC) /
+    return (l2(src, dst) /
             IP(src=src, dst=dst, id=pkt_id) /
             ICMP(type=8) / Raw(load=b"ping" * 8))
 
@@ -149,5 +178,11 @@ for _ in range(30):
         packets.append(eth_udp(pub, int_ip, info["port"], random.randint(1024,65000), b"DNS_RESPONSE"))
 
 random.shuffle(packets)
+
+# Routers announce themselves via ARP (as any real LAN capture would show)
+arp = [Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") /
+       ARP(op=2, hwsrc=mac, psrc=ip, hwdst="ff:ff:ff:ff:ff:ff", pdst=ip)
+       for ip, mac in ((GATEWAY_IP, GATEWAY_MAC), (ROGUE_IP, ROGUE_MAC))]
+packets = arp + packets
 wrpcap(OUTPUT_FILE, packets)
 print(f"✅  Generated {OUTPUT_FILE}  ({len(packets)} packets, linktype=Ethernet)")

@@ -18,8 +18,8 @@ Supports TWO modes automatically:
 HTC requirements covered by replay:
   REQ 1  Unique internal Assets    → src_ip / dst_ip private ranges
   REQ 2  Public IPs                → src_ip / dst_ip public ranges
-  REQ 3  Gateway detection         → nexthop field in NetFlow records
-  REQ 4  NAT bypass detection      → rogue nexthop (10.0.0.99) for bypass IPs
+  REQ 3  Gateway detection         → nexthop field, derived from Ethernet dst MAC
+  REQ 4  NAT bypass detection      → hosts whose egress MAC is not the main gateway
   REQ 5  Protocols & ports         → protocol + dst_port in each record
   REQ 6  Relationship graph        → src_ip → dst_ip edges
   REQ 7  Compliance / absent IPs   → only active IPs appear; absent ones flagged
@@ -44,11 +44,6 @@ NF_HEADER_FORMAT = '!HHIIIIBBH'    # 24 bytes
 NF_RECORD_FORMAT = '!IIIHHIIIIHHBBBBHHBBh'  # 48 bytes
 NF_HEADER_SIZE   = struct.calcsize(NF_HEADER_FORMAT)
 NF_RECORD_SIZE   = struct.calcsize(NF_RECORD_FORMAT)
-
-# NAT topology matching generate_test_pcap.py and pcap_parser.py
-PRIMARY_GATEWAY = "10.0.0.1"
-BYPASS_IPS      = {"10.0.1.100", "10.0.1.101", "192.168.10.5"}
-BYPASS_NEXTHOP  = "10.0.0.99"      # rogue nexthop → triggers NAT bypass detection
 
 MAX_RECORDS_PER_DATAGRAM = 30      # NetFlow v5 spec max is 30 records per packet
 
@@ -91,7 +86,7 @@ def build_netflow_datagram(flow_records, seq_number):
                            protocol, packets, bytes, first_ms, last_ms, tcp_flags
     """
     now        = int(time.time())
-    uptime_ms  = (now % 86400) * 1000   # mock uptime (ms since midnight)
+    uptime_ms  = 86400 * 1000            # mock exporter uptime: 24h
     count      = len(flow_records)
 
     header = struct.pack(
@@ -109,7 +104,7 @@ def build_netflow_datagram(flow_records, seq_number):
 
     body = b''
     for f in flow_records:
-        nh = f.get('nexthop', PRIMARY_GATEWAY)
+        nh = f.get('nexthop', '0.0.0.0')
         body += struct.pack(
             NF_RECORD_FORMAT,
             ip_to_int(f['src_ip']),   # srcaddr
@@ -171,70 +166,37 @@ def replay_netflow_pcap(packets, sock, target, delay):
 
 
 # ── Mode B: convert raw traffic PCAP → NetFlow v5 and send ───────────────────
-def replay_raw_traffic_pcap(packets, sock, target, delay):
+def replay_raw_traffic_pcap(pcap_file, sock, target, delay):
     """
-    Aggregates raw IP packets into bidirectional flows, encodes as NetFlow v5,
-    and sends to the collector. This satisfies ALL HTC requirements when using
-    a raw packet capture (like test_traffic.pcap).
-
-    FIX vs original: original sent 0 packets from raw PCAPs because it only
-    looked for UDP dport==2055. This version converts any raw PCAP to NetFlow.
+    Aggregates raw IP packets into flows with pcap_parser.aggregate_raw_pcap
+    (next hop derived from Ethernet MACs / ARP), encodes them as NetFlow v5
+    and sends them to the collector.
     """
-    flows = defaultdict(lambda: {
-        'packets': 0, 'bytes': 0, 'tcp_flags': 0,
-        'first_ms': None, 'last_ms': None
-    })
+    from pcap_parser import aggregate_raw_pcap
 
-    base_time = None
-    for pkt in packets:
-        if IP not in pkt:
-            continue
-        ip    = pkt[IP]
-        ts_ms = int(float(pkt.time) * 1000)
-        if base_time is None:
-            base_time = ts_ms
+    flows, _resolver = aggregate_raw_pcap(pcap_file)
+    if not flows:
+        return 0, 0, [], []
 
-        src_ip = ip.src
-        dst_ip = ip.dst
-        proto  = ip.proto
-        sport = dport = tcp_flags = 0
+    # NetFlow v5 First/Last are 32-bit sysUptime offsets, not epoch times
+    uptime_ms = 86400 * 1000
+    latest = max(f['last'] for f in flows)
+    unresolved = sorted({f['nexthop'] for f in flows if f['nexthop'].startswith('mac:')})
 
-        if TCP in pkt:
-            sport     = pkt[TCP].sport
-            dport     = pkt[TCP].dport
-            tcp_flags = int(pkt[TCP].flags)
-        elif UDP in pkt:
-            sport = pkt[UDP].sport
-            dport = pkt[UDP].dport
-
-        # Nexthop = gateway routing (NAT bypass detection — REQ 4)
-        nexthop = "0.0.0.0"
-        if is_private(src_ip) and not is_private(dst_ip):
-            nexthop = BYPASS_NEXTHOP if src_ip in BYPASS_IPS else PRIMARY_GATEWAY
-
-        key = (src_ip, dst_ip, sport, dport, proto, nexthop)
-        f   = flows[key]
-        f['packets']   += 1
-        f['bytes']     += len(ip)
-        f['tcp_flags'] |= tcp_flags
-        f['first_ms']   = ts_ms if f['first_ms'] is None else min(f['first_ms'], ts_ms)
-        f['last_ms']    = max(f['last_ms'] or 0, ts_ms)
-
-    # Convert to list of record dicts
     records = []
-    for (src_ip, dst_ip, sport, dport, proto, nh), f in flows.items():
+    for f in flows:
         records.append({
-            'src_ip':   src_ip,
-            'dst_ip':   dst_ip,
-            'nexthop':  nh,
-            'src_port': sport,
-            'dst_port': dport,
-            'protocol': proto,
+            'src_ip':   f['src_ip'],
+            'dst_ip':   f['dst_ip'],
+            'nexthop':  '0.0.0.0' if f['nexthop'].startswith('mac:') else f['nexthop'],
+            'src_port': f['src_port'],
+            'dst_port': f['dst_port'],
+            'protocol': f['protocol'],
             'packets':  f['packets'],
             'bytes':    f['bytes'],
             'tcp_flags':f['tcp_flags'],
-            'first_ms': f['first_ms'] or 0,
-            'last_ms':  f['last_ms']  or 0,
+            'first_ms': max(0, uptime_ms - int((latest - f['first']) * 1000)),
+            'last_ms':  max(0, uptime_ms - int((latest - f['last']) * 1000)),
         })
 
     # Send in batches of MAX_RECORDS_PER_DATAGRAM
@@ -252,7 +214,8 @@ def replay_raw_traffic_pcap(packets, sock, target, delay):
         except OSError as e:
             print(f"  [WARN] Send error: {e}")
 
-    return sent_datagrams, len(records)
+    hops = sorted({r['nexthop'] for r in records if r['nexthop'] != '0.0.0.0'})
+    return sent_datagrams, len(records), hops, unresolved
 
 
 # ── PCAP type detector ─────────────────────────────────────────────────────────
@@ -331,7 +294,7 @@ def replay_pcap(pcap_file, target_ip="127.0.0.1", target_port=2055,
             print(f"  Skipped (invalid v5)    : {inv}")
             print(f"  Skipped (wrong port)    : {wrong}")
         else:
-            datagrams, flow_count = replay_raw_traffic_pcap(packets, sock, target, delay)
+            datagrams, flow_count, hops, unresolved = replay_raw_traffic_pcap(pcap_file, sock, target, delay)
             elapsed = time.time() - start
             print(f"\n{'='*60}")
             print(f"  Replay complete in {elapsed:.2f}s")
@@ -341,8 +304,9 @@ def replay_pcap(pcap_file, target_ip="127.0.0.1", target_port=2055,
             print(f"\n  HTC requirements covered:")
             print(f"    REQ 1  Internal Assets    ✅ (private src/dst IPs in flows)")
             print(f"    REQ 2  Public IPs         ✅ (public src/dst IPs in flows)")
-            print(f"    REQ 3  Gateway            ✅ (nexthop={PRIMARY_GATEWAY})")
-            print(f"    REQ 4  NAT Bypass         ✅ (nexthop={BYPASS_NEXTHOP} for bypass IPs)")
+            print(f"    REQ 3/4 Egress next hops  : {', '.join(hops) or 'none found'} (from Ethernet/ARP)")
+            if unresolved:
+                print(f"    [WARN] Next-hop MACs with no IP (no ARP seen), sent as 0.0.0.0: {', '.join(unresolved)}")
             print(f"    REQ 5  Protocol/Ports     ✅ (protocol+port in every record)")
             print(f"    REQ 6  Relationship Graph ✅ (src_ip→dst_ip in every record)")
             print(f"    REQ 7  Compliance/Absent  ✅ (only seen IPs appear; rest flagged)")
